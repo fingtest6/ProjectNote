@@ -2,6 +2,8 @@
   "name": "project-notes-app",
   "private": true,
   "version": "1.0.0",
+  "description": "项目便签：分项目记录、双链引用与 Git 式历史的本地优先便签应用",
+  "author": "fingtest6 <fingtest6@users.noreply.github.com>",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -10,7 +12,10 @@
     "preview": "vite preview",
     "electron:dev": "node scripts/run-electron.cjs",
     "app:windows": "node scripts/run-electron.cjs",
-    "electron:build": "tsc && vite build && electron-builder --win nsis",
+    "electron:build": "tsc && vite build && electron-builder --publish never",
+    "electron:build:win": "tsc && vite build && electron-builder --win nsis --publish never",
+    "electron:build:mac": "tsc && vite build && electron-builder --mac --publish never",
+    "electron:build:linux": "tsc && vite build && electron-builder --linux --publish never",
     "sync:server": "node scripts/sync-server.cjs",
     "cap:add": "cap add android",
     "cap:sync": "tsc && vite build && cap sync android",
@@ -59,7 +64,8 @@
     "appId": "top.rduteam.projectnote",
     "productName": "项目便签",
     "directories": {
-      "output": "release"
+      "output": "release",
+      "buildResources": "build"
     },
     "files": [
       "dist/**/*",
@@ -69,7 +75,25 @@
     ],
     "win": {
       "icon": "icon.ico",
-      "target": "nsis"
+      "target": [
+        "nsis"
+      ]
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
     }
   }
 }
