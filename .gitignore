@@ -1,0 +1,35 @@
+# ---------- dependencies ----------
+node_modules/
+.pnpm-store/
+
+# ---------- build output ----------
+dist/
+dist-ssr/
+release/
+*.tsbuildinfo
+
+# ---------- Capacitor / Android generated ----------
+android/.gradle/
+android/build/
+android/app/build/
+android/app/debug/
+android/app/release/
+android/local.properties
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+android/capacitor-cordova-android-plugins/
+
+# ---------- runtime data ----------
+.sync_vault_cache.json
+*.log
+
+# ---------- 遗留启动器产物（旧 .bat 方案，不再维护） ----------
+/项目便签.exe
+/app
+
+# ---------- OS / editor ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

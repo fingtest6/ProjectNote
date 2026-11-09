@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#047857"/>
+    </linearGradient>
+    <linearGradient id="sheet" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f0fdf4"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  
+  <!-- Rounded App Background -->
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  
+  <!-- Note Sheet -->
+  <g filter="url(#shadow)">
+    <rect x="116" y="96" width="280" height="320" rx="32" fill="url(#sheet)"/>
+    
+    <!-- Header decorative pin / clip -->
+    <rect x="196" y="76" width="120" height="36" rx="18" fill="#047857"/>
+    <circle cx="256" cy="94" r="8" fill="#34d399"/>
+    
+    <!-- Text Lines -->
+    <rect x="160" y="160" width="140" height="18" rx="9" fill="#10b981"/>
+    <rect x="160" y="204" width="192" height="12" rx="6" fill="#cbd5e1"/>
+    <rect x="160" y="234" width="170" height="12" rx="6" fill="#cbd5e1"/>
+    <rect x="160" y="264" width="180" height="12" rx="6" fill="#cbd5e1"/>
+    
+    <!-- Git Commit Node / Link indicator in note -->
+    <circle cx="176" cy="336" r="14" fill="#10b981"/>
+    <line x1="190" y1="336" x2="230" y2="336" stroke="#10b981" stroke-width="4" stroke-dasharray="4,4"/>
+    <circle cx="244" cy="336" r="14" fill="#3b82f6"/>
+    <line x1="258" y1="336" x2="298" y2="336" stroke="#3b82f6" stroke-width="4" stroke-dasharray="4,4"/>
+    <circle cx="312" cy="336" r="14" fill="#8b5cf6"/>
+  </g>
+</svg>

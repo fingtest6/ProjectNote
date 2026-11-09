@@ -1,0 +1,535 @@
+import type { NoteHistory, SyncPayload, SyncResult, SyncMode } from '../types';
+import { db } from '../db';
+import { writeNoteToExternalVault } from './vaultStorage';
+
+const DEVICE_ID_KEY = 'project_notes_device_id';
+const DEVICE_NAME_KEY = 'project_notes_device_name';
+const LAST_SYNC_SERVER_KEY = 'project_notes_last_sync_server';
+const LAST_SYNC_PIN_KEY = 'project_notes_last_sync_pin';
+
+export function getLocalDeviceId(): string {
+  let id = localStorage.getItem(DEVICE_ID_KEY);
+  if (!id) {
+    id = `dev-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    localStorage.setItem(DEVICE_ID_KEY, id);
+  }
+  return id;
+}
+
+export function getLocalDeviceName(): string {
+  let name = localStorage.getItem(DEVICE_NAME_KEY);
+  if (!name) {
+    const isElectron = Boolean((window as any).electronAPI);
+    const userAgent = navigator.userAgent || '';
+    if (isElectron) {
+      name = '💻 Windows 电脑端';
+    } else if (/Android/i.test(userAgent)) {
+      name = '📱 Android 手机端';
+    } else if (/iPhone|iPad/i.test(userAgent)) {
+      name = '📱 iPhone 手机端';
+    } else {
+      name = '💻 桌面浏览器端';
+    }
+    localStorage.setItem(DEVICE_NAME_KEY, name);
+  }
+  return name;
+}
+
+export function saveLastSyncTarget(serverUrl: string, pin: string) {
+  localStorage.setItem(LAST_SYNC_SERVER_KEY, serverUrl);
+  localStorage.setItem(LAST_SYNC_PIN_KEY, pin);
+}
+
+export function getLastSyncTarget(): { serverUrl: string; pin: string } {
+  return {
+    serverUrl: localStorage.getItem(LAST_SYNC_SERVER_KEY) || '',
+    pin: localStorage.getItem(LAST_SYNC_PIN_KEY) || '888888',
+  };
+}
+
+// Generate complete sync payload from local database
+export async function generateLocalSyncPayload(): Promise<SyncPayload> {
+  const projects = await db.projects.toArray();
+  const notes = await db.notes.toArray();
+  const histories = await db.histories.toArray();
+
+  return {
+    deviceId: getLocalDeviceId(),
+    deviceName: getLocalDeviceName(),
+    timestamp: Date.now(),
+    projects,
+    notes,
+    histories,
+  };
+}
+
+// Check remote server online status and retrieve basic metadata
+export async function checkRemoteServerStatus(serverAddress: string): Promise<{
+  online: boolean;
+  deviceName?: string;
+  noteCount?: number;
+  projectCount?: number;
+  ips?: string[];
+  port?: number;
+  message?: string;
+}> {
+  let url = serverAddress.trim();
+  if (!url) return { online: false, message: '请填写电脑 IP' };
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `http://${url}`;
+  }
+  if (!/:\d+$/.test(url.replace(/^https?:\/\//, ''))) {
+    url = `${url}:25860`;
+  }
+
+  try {
+    const deviceId = getLocalDeviceId();
+    const deviceName = encodeURIComponent(getLocalDeviceName());
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`${url}/api/status?deviceId=${deviceId}&deviceName=${deviceName}`, { signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      return { online: false, message: `服务器响应异常 (${res.status})` };
+    }
+
+    const data = await res.json();
+    return {
+      online: data.status === 'ready',
+      deviceName: data.deviceName || 'Windows 电脑端',
+      noteCount: data.noteCount ?? 0,
+      projectCount: data.projectCount ?? 0,
+      ips: data.ips || [],
+      port: data.port || 25860,
+    };
+  } catch (err: any) {
+    return {
+      online: false,
+      message: err.name === 'AbortError' ? '连接超时' : '无法连接到电脑',
+    };
+  }
+}
+
+// Handle incoming sync request on the Server (PC)
+export async function handleServerIncomingSync(
+  clientPayload: SyncPayload,
+  mode: SyncMode = 'smart-merge'
+): Promise<{
+  pulledNotes: number;
+  pushedNotes: number;
+  pulledProjects: number;
+  pushedProjects: number;
+  newNotesAdded: number;
+  historiesSynced: number;
+  details: string[];
+}> {
+  let pulledNotes = 0;
+  let pushedNotes = 0;
+  let pulledProjects = 0;
+  let pushedProjects = 0;
+  let newNotesAdded = 0;
+  let historiesSynced = 0;
+  const details: string[] = [];
+
+  // Record this sync in local storage for PC UI display
+  try {
+    localStorage.setItem(
+      'project_notes_last_server_sync',
+      JSON.stringify({
+        timestamp: Date.now(),
+        deviceName: clientPayload.deviceName || '移动端',
+        mode,
+        clientNoteCount: clientPayload.notes ? clientPayload.notes.length : 0,
+      })
+    );
+    window.dispatchEvent(new CustomEvent('project-notes:server-sync-received'));
+  } catch (e) {}
+
+  // 1. push-overwrite: Mobile completely overwrites server!
+  if (mode === 'push-overwrite') {
+    await db.notes.clear();
+    await db.projects.clear();
+    await db.histories.clear();
+
+    if (clientPayload.projects && clientPayload.projects.length > 0) {
+      await db.projects.bulkAdd(clientPayload.projects);
+      pulledProjects = clientPayload.projects.length;
+    }
+    if (clientPayload.notes && clientPayload.notes.length > 0) {
+      await db.notes.bulkAdd(clientPayload.notes);
+      pulledNotes = clientPayload.notes.length;
+      newNotesAdded = clientPayload.notes.length;
+      for (const note of clientPayload.notes) {
+        const proj = (clientPayload.projects || []).find((p) => p.id === note.projectId);
+        writeNoteToExternalVault(note, proj);
+      }
+    }
+    if (clientPayload.histories && clientPayload.histories.length > 0) {
+      await db.histories.bulkAdd(clientPayload.histories);
+      historiesSynced = clientPayload.histories.length;
+    }
+
+    details.push(`已按手机端版本完全覆盖电脑：写入 ${clientPayload.notes.length} 篇便签、${clientPayload.projects.length} 个分类`);
+    return { pulledNotes, pushedNotes, pulledProjects, pushedProjects, newNotesAdded, historiesSynced, details };
+  }
+
+  // 2. pull-overwrite: Mobile wants server's exact data, server does NOT change!
+  if (mode === 'pull-overwrite') {
+    const currentNotes = await db.notes.count();
+    details.push(`手机请求全量拉取：电脑端保持不变，已向手机传输全部 ${currentNotes} 篇便签`);
+    return { pulledNotes: 0, pushedNotes: currentNotes, pulledProjects: 0, pushedProjects: 0, newNotesAdded: 0, historiesSynced: 0, details };
+  }
+
+  // 3. new-only & smart-merge
+  return await mergeRemotePayload(clientPayload, mode);
+}
+
+// Merge incoming remote payload into local database with explicit sync modes
+export async function mergeRemotePayload(
+  remote: SyncPayload,
+  mode: SyncMode = 'smart-merge'
+): Promise<{
+  pulledNotes: number;
+  pushedNotes: number;
+  pulledProjects: number;
+  pushedProjects: number;
+  newNotesAdded: number;
+  historiesSynced: number;
+  details: string[];
+}> {
+  let pulledNotes = 0;
+  let pushedNotes = 0;
+  let pulledProjects = 0;
+  let pushedProjects = 0;
+  let newNotesAdded = 0;
+  let historiesSynced = 0;
+  const details: string[] = [];
+
+  const localProjects = await db.projects.toArray();
+  const localNotes = await db.notes.toArray();
+  const localHistories = await db.histories.toArray();
+
+  const localProjectMap = new Map(localProjects.map((p) => [p.id, p]));
+  const localNoteMap = new Map(localNotes.map((n) => [n.id, n]));
+  const localHistoryIds = new Set(localHistories.map((h) => h.id));
+
+  // --- MODE: PULL-OVERWRITE (以远端电脑为准完全克隆覆盖本机) ---
+  if (mode === 'pull-overwrite') {
+    await db.notes.clear();
+    await db.projects.clear();
+    await db.histories.clear();
+
+    if (remote.projects.length > 0) {
+      await db.projects.bulkAdd(remote.projects);
+      pulledProjects = remote.projects.length;
+    }
+    if (remote.notes.length > 0) {
+      await db.notes.bulkAdd(remote.notes);
+      pulledNotes = remote.notes.length;
+      newNotesAdded = remote.notes.length;
+      for (const note of remote.notes) {
+        const proj = remote.projects.find((p) => p.id === note.projectId);
+        writeNoteToExternalVault(note, proj);
+      }
+    }
+    if (remote.histories.length > 0) {
+      await db.histories.bulkAdd(remote.histories);
+      historiesSynced = remote.histories.length;
+    }
+
+    details.push(`全量克隆完成：已按电脑端版本完全重置本地，共覆盖写入 ${remote.notes.length} 篇便签、${remote.projects.length} 个分类`);
+    return { pulledNotes, pushedNotes, pulledProjects, pushedProjects, newNotesAdded, historiesSynced, details };
+  }
+
+  // --- 1. Merge Projects ---
+  for (const remProj of remote.projects) {
+    const locProj = localProjectMap.get(remProj.id);
+    if (!locProj) {
+      if (!remProj.deletedAt) {
+        await db.projects.put(remProj);
+        pulledProjects++;
+        details.push(`[拉取项目] 新增项目分类「${remProj.name}」`);
+      }
+    } else if (mode !== 'new-only') {
+      if (remProj.deletedAt && !locProj.deletedAt) {
+        await db.projects.delete(remProj.id);
+        pulledProjects++;
+      } else if (remProj.updatedAt > locProj.updatedAt) {
+        await db.projects.put(remProj);
+        pulledProjects++;
+        details.push(`[更新项目] 项目「${remProj.name}」已更新为远端最新设置`);
+      } else if (locProj.updatedAt > remProj.updatedAt) {
+        pushedProjects++;
+      }
+    }
+  }
+
+  // Count local projects that remote doesn't have
+  const remoteProjIds = new Set(remote.projects.map((p) => p.id));
+  for (const locProj of localProjects) {
+    if (!remoteProjIds.has(locProj.id)) {
+      pushedProjects++;
+      details.push(`[推送项目] 本地新项目「${locProj.name}」已推送至电脑`);
+    }
+  }
+
+  // --- 2. Merge Notes ---
+  for (const remNote of remote.notes) {
+    const locNote = localNoteMap.get(remNote.id);
+    if (!locNote) {
+      if (!remNote.deletedAt) {
+        await db.notes.put(remNote);
+        pulledNotes++;
+        newNotesAdded++;
+        details.push(`[拉取新增] 便签「${remNote.title || '无标题'}」`);
+        const proj = await db.projects.get(remNote.projectId);
+        writeNoteToExternalVault(remNote, proj);
+      }
+    } else {
+      if (mode === 'new-only') {
+        // In new-only mode, skip existing notes completely
+        continue;
+      }
+      if (remNote.deletedAt && !locNote.deletedAt) {
+        await db.notes.delete(remNote.id);
+        pulledNotes++;
+        details.push(`[删除同步] 便签「${remNote.title}」在电脑端已删除`);
+      } else if (remNote.updatedAt > locNote.updatedAt) {
+        await db.notes.put(remNote);
+        pulledNotes++;
+        details.push(`[拉取更新] 便签「${remNote.title}」(电脑端版本更新)`);
+        const proj = await db.projects.get(remNote.projectId);
+        writeNoteToExternalVault(remNote, proj);
+      } else if (locNote.updatedAt > remNote.updatedAt) {
+        pushedNotes++;
+        details.push(`[推送更新] 便签「${locNote.title}」(手机端版本更新)`);
+      }
+    }
+  }
+
+  // Count local notes that remote doesn't have
+  const remoteNoteIds = new Set(remote.notes.map((n) => n.id));
+  for (const locNote of localNotes) {
+    if (!remoteNoteIds.has(locNote.id)) {
+      pushedNotes++;
+      details.push(`[推送新增] 本地新建便签「${locNote.title || '无标题'}」已推送到电脑`);
+    }
+  }
+
+  // --- 3. Merge Git Histories ---
+  const newHistories: NoteHistory[] = [];
+  for (const remHist of remote.histories) {
+    if (!localHistoryIds.has(remHist.id)) {
+      newHistories.push(remHist);
+      historiesSynced++;
+    }
+  }
+  if (newHistories.length > 0) {
+    await db.histories.bulkAdd(newHistories);
+  }
+
+  return { pulledNotes, pushedNotes, pulledProjects, pushedProjects, newNotesAdded, historiesSynced, details };
+}
+
+// Perform LAN sync request from client (Phone or secondary PC) to Server (Primary PC)
+export async function syncWithRemoteServer(
+  serverAddress: string,
+  pin: string,
+  mode: SyncMode = 'smart-merge',
+  isReplyToInvite: boolean = false
+): Promise<SyncResult> {
+  // Normalize address
+  let url = serverAddress.trim();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `http://${url}`;
+  }
+  if (!/:\d+$/.test(url.replace(/^https?:\/\//, ''))) {
+    url = `${url}:25860`;
+  }
+
+  try {
+    const localPayload = await generateLocalSyncPayload();
+
+    const controller = new AbortController();
+    // Allow up to 50s for the receiving device user to read and confirm the prompt
+    const timeoutId = setTimeout(() => controller.abort(), 50000);
+
+    const response = await fetch(`${url}/api/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        pin,
+        mode,
+        from: {
+          deviceId: localPayload.deviceId,
+          deviceName: localPayload.deviceName,
+          isReplyToInvite,
+        },
+        summary: {
+          noteCount: localPayload.notes.length,
+          projectCount: localPayload.projects.length,
+        },
+        payload: localPayload,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text();
+      return {
+        success: false,
+        accepted: false,
+        mode,
+        pulledNotes: 0,
+        pushedNotes: 0,
+        pulledProjects: 0,
+        pushedProjects: 0,
+        message: `同步失败: ${response.status} ${errText || '连接异常'}`,
+      };
+    }
+
+    const data = await response.json();
+    if (data.accepted === false) {
+      return {
+        success: false,
+        accepted: false,
+        mode,
+        pulledNotes: 0,
+        pushedNotes: 0,
+        pulledProjects: 0,
+        pushedProjects: 0,
+        message: data.message || '对方设备拒绝了本次同步请求',
+      };
+    }
+
+    if (!data.success || !data.payload) {
+      return {
+        success: false,
+        accepted: false,
+        mode,
+        pulledNotes: 0,
+        pushedNotes: 0,
+        pulledProjects: 0,
+        pushedProjects: 0,
+        message: data.message || '远程设备拒绝或未能完成同步',
+      };
+    }
+
+    // Merge remote data into local database
+    let stats;
+    if (mode === 'push-overwrite') {
+      stats = {
+        pulledNotes: 0,
+        pushedNotes: localPayload.notes.length,
+        pulledProjects: 0,
+        pushedProjects: localPayload.projects.length,
+        newNotesAdded: 0,
+        historiesSynced: 0,
+        details: [`【完全推送成功】已将本机 ${localPayload.notes.length} 篇便签完全覆盖写入电脑端！`],
+      };
+    } else {
+      stats = await mergeRemotePayload(data.payload, mode);
+    }
+
+    saveLastSyncTarget(serverAddress, pin);
+
+    const modeLabels: Record<SyncMode, string> = {
+      'smart-merge': '双向智能合并',
+      'push-overwrite': '完全覆盖电脑端',
+      'pull-overwrite': '完全覆盖本机',
+      'new-only': '仅同步新增便签',
+    };
+
+    const modeDesc = modeLabels[mode] || '互联同步';
+
+    return {
+      success: true,
+      accepted: true,
+      mode,
+      perspective: 'initiator',
+      pulledNotes: stats.pulledNotes,
+      pushedNotes: stats.pushedNotes,
+      pulledProjects: stats.pulledProjects,
+      pushedProjects: stats.pushedProjects,
+      newNotesAdded: stats.newNotesAdded,
+      historiesSynced: stats.historiesSynced,
+      message: `【${modeDesc}】同步完成！从电脑拉取更新 ${stats.pulledNotes} 篇，向电脑推送更新 ${stats.pushedNotes} 篇，新增便签 ${stats.newNotesAdded} 篇`,
+      details: stats.details,
+    };
+  } catch (err: any) {
+    console.error('Sync failed:', err);
+    let reason = err.message || '';
+    if (err.name === 'AbortError') {
+      reason = '连接超时：对方设备未在 50 秒内点击确认允许，或网络未联通';
+    } else if (reason.includes('Failed to fetch')) {
+      reason = '无法连接到对方设备：请确认设备处于同一 Wi-Fi 且局域网互联服务已开启';
+    }
+    return {
+      success: false,
+      accepted: false,
+      mode,
+      pulledNotes: 0,
+      pushedNotes: 0,
+      pulledProjects: 0,
+      pushedProjects: 0,
+      message: reason,
+    };
+  }
+}
+
+// Mobile device polling loop to listen for sync invitations from PC
+export async function pollDeviceTask(
+  serverAddress: string,
+  onTask: (task: {
+    type: string;
+    mode: SyncMode;
+    from: string;
+    noteCount?: number;
+    projectCount?: number;
+  }) => void,
+  abortSignal?: AbortSignal
+): Promise<void> {
+  let url = serverAddress.trim();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `http://${url}`;
+  }
+  if (!/:\d+$/.test(url.replace(/^https?:\/\//, ''))) {
+    url = `${url}:25860`;
+  }
+
+  const deviceId = getLocalDeviceId();
+  const deviceName = encodeURIComponent(getLocalDeviceName());
+
+  // 长轮询兜底超时：电脑端异常时也能及时回到循环重试，避免手机端监听永久卡死
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
+  const forwardAbort = () => controller.abort();
+  if (abortSignal) {
+    if (abortSignal.aborted) {
+      controller.abort();
+    } else {
+      abortSignal.addEventListener('abort', forwardAbort);
+    }
+  }
+
+  try {
+    const res = await fetch(`${url}/api/device/poll?deviceId=${deviceId}&deviceName=${deviceName}`, {
+      signal: controller.signal,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.hasTask && data.task) {
+        onTask(data.task);
+      }
+    }
+  } catch (e) {
+    // Ignore network / poll abort errors
+  } finally {
+    clearTimeout(timeoutId);
+    if (abortSignal) abortSignal.removeEventListener('abort', forwardAbort);
+  }
+}

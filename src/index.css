@@ -1,0 +1,243 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --theme-primary: #10b981;
+  --theme-hover: #059669;
+  --theme-soft: rgba(16, 185, 129, 0.08);
+  --theme-ring: rgba(16, 185, 129, 0.35);
+  --safe-top: env(safe-area-inset-top, 24px);
+  --safe-bottom: env(safe-area-inset-bottom, 20px);
+}
+
+/* Mobile Touch & Tap Optimizations */
+* {
+  -webkit-tap-highlight-color: transparent;
+  box-sizing: border-box;
+}
+
+body {
+  overscroll-behavior-y: none;
+  touch-action: pan-x pan-y;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.35);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.6);
+}
+
+/* Interactive Tap Feedback Classes */
+.touch-press {
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+  user-select: none;
+}
+.touch-press:active {
+  transform: scale(0.96);
+  filter: brightness(0.93);
+}
+.dark .touch-press:active {
+  filter: brightness(1.12);
+}
+
+.touch-press-subtle {
+  transition: transform 0.12s ease-out, opacity 0.12s ease-out;
+}
+.touch-press-subtle:active {
+  transform: scale(0.93);
+  opacity: 0.8;
+}
+
+/* Keyframe Animations */
+@keyframes slideUpSpring {
+  0% {
+    transform: translateY(100%);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeInScale {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes cardEntrance {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes fabPulse {
+  0% {
+    box-shadow: 0 4px 14px 0 var(--theme-ring);
+  }
+  50% {
+    box-shadow: 0 8px 24px 4px var(--theme-ring);
+  }
+  100% {
+    box-shadow: 0 4px 14px 0 var(--theme-ring);
+  }
+}
+
+.animate-slide-up-spring {
+  animation: slideUpSpring 0.36s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-scale {
+  animation: fadeInScale 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-card-in {
+  animation: cardEntrance 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fab-glow {
+  animation: fabPulse 3s infinite ease-in-out;
+}
+
+/* Markdown prose styles */
+.markdown-body {
+  word-break: break-word;
+  line-height: 1.65;
+}
+
+.markdown-body h1 {
+  font-size: 1.45rem;
+  font-weight: 700;
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(156, 163, 175, 0.2);
+  padding-bottom: 0.25rem;
+}
+
+.markdown-body h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 0.85rem;
+  margin-bottom: 0.4rem;
+}
+
+.markdown-body h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 0.7rem;
+  margin-bottom: 0.3rem;
+}
+
+.markdown-body p {
+  margin-bottom: 0.65rem;
+}
+
+.markdown-body ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-bottom: 0.65rem;
+}
+
+.markdown-body ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-bottom: 0.65rem;
+}
+
+.markdown-body li {
+  margin-bottom: 0.2rem;
+}
+
+.markdown-body blockquote {
+  border-left: 3px solid var(--theme-primary);
+  padding-left: 0.75rem;
+  margin: 0.65rem 0;
+  color: #64748b;
+  font-style: italic;
+  background: var(--theme-soft);
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-radius: 0 0.375rem 0.375rem 0;
+}
+
+.dark .markdown-body blockquote {
+  color: #94a3b8;
+}
+
+.markdown-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  background-color: rgba(148, 163, 184, 0.18);
+  color: var(--theme-primary);
+}
+
+.markdown-body pre {
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background-color: #1e293b;
+  color: #e2e8f0;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+
+.markdown-body pre code {
+  background-color: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.markdown-body img {
+  max-width: 100%;
+  border-radius: 0.5rem;
+  margin: 0.5rem 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.markdown-body hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid rgba(156, 163, 175, 0.25);
+}
+
+/* Reference badge chip */
+.note-ref-badge {
+  background-color: var(--theme-soft);
+  color: var(--theme-primary);
+  border: 1px solid var(--theme-ring);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.note-ref-badge:hover, .note-ref-badge:active {
+  filter: brightness(0.92);
+  transform: translateY(-1px) scale(0.98);
+}
+
+.dark .note-ref-badge:hover, .dark .note-ref-badge:active {
+  filter: brightness(1.15);
+}
