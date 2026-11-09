@@ -250,7 +250,9 @@ export async function mergeRemotePayload(
     return { pulledNotes, pushedNotes, pulledProjects, pushedProjects, newNotesAdded, historiesSynced, details };
   }
 
-  // --- 1. Merge Projects（墓碑同样参与 updatedAt 比较，删除才能双向传播） ---
+  // --- 1. Merge Projects ---
+  // 智能合并是纯增量 / 更新：双方墓碑（删除状态）一律不参与合并，也不上报。
+  // 删除只会在「完全覆盖」模式下随整库替换生效。
   for (const remProj of remote.projects) {
     const locProj = localProjectMap.get(remProj.id);
     if (!locProj) {
@@ -262,28 +264,15 @@ export async function mergeRemotePayload(
       continue;
     }
 
+    if (remProj.deletedAt || locProj.deletedAt) continue;
     if (mode === 'new-only') continue;
 
     if (remProj.updatedAt > locProj.updatedAt) {
       await db.projects.put(remProj);
-      const alreadyDeletedBoth = Boolean(remProj.deletedAt && locProj.deletedAt);
-      if (!alreadyDeletedBoth) {
-        pulledProjects++;
-        details.push(
-          remProj.deletedAt
-            ? `[删除同步] 项目分类「${remProj.name}」已在对方删除`
-            : `[更新项目] 项目「${remProj.name}」已更新为远端最新设置`
-        );
-      }
+      pulledProjects++;
+      details.push(`[更新项目] 项目「${remProj.name}」已更新为远端最新设置`);
     } else if (locProj.updatedAt > remProj.updatedAt) {
-      // 双方都已是墓碑时无需再上报；只有「对方仍存活」时删除才需要传播
-      const alreadyDeletedBoth = Boolean(locProj.deletedAt && remProj.deletedAt);
-      if (!alreadyDeletedBoth) {
-        pushedProjects++;
-        if (locProj.deletedAt) {
-          details.push(`[删除同步] 本机已删除的项目「${locProj.name}」，对方将同步删除`);
-        }
-      }
+      pushedProjects++;
     }
   }
 
@@ -299,6 +288,7 @@ export async function mergeRemotePayload(
   }
 
   // --- 2. Merge Notes ---
+  // 同理：墓碑不参与智能合并，避免「双向合并」删除或复活任何便签。
   for (const remNote of remote.notes) {
     const locNote = localNoteMap.get(remNote.id);
     if (!locNote) {
@@ -313,33 +303,18 @@ export async function mergeRemotePayload(
       continue;
     }
 
+    if (remNote.deletedAt || locNote.deletedAt) continue;
     if (mode === 'new-only') continue;
 
     if (remNote.updatedAt > locNote.updatedAt) {
       await db.notes.put(remNote);
-      const alreadyDeletedBoth = Boolean(remNote.deletedAt && locNote.deletedAt);
-      if (!alreadyDeletedBoth) {
-        pulledNotes++;
-        const proj = await db.projects.get(remNote.projectId);
-        if (remNote.deletedAt) {
-          details.push(`[删除同步] 便签「${remNote.title || '无标题'}」已在对方删除`);
-          deleteNoteFromExternalVault(remNote.title || '无标题', proj?.name || '默认项目').catch(() => {});
-        } else {
-          details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
-          writeNoteToExternalVault(remNote, proj);
-        }
-      }
+      pulledNotes++;
+      details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
+      const proj = await db.projects.get(remNote.projectId);
+      writeNoteToExternalVault(remNote, proj);
     } else if (locNote.updatedAt > remNote.updatedAt) {
-      // 双方都已是墓碑时无需再上报；只有「对方仍存活」时删除才需要传播
-      const alreadyDeletedBoth = Boolean(locNote.deletedAt && remNote.deletedAt);
-      if (!alreadyDeletedBoth) {
-        pushedNotes++;
-        if (locNote.deletedAt) {
-          details.push(`[删除同步] 本机已删除的便签「${locNote.title || '无标题'}」，对方将同步删除`);
-        } else {
-          details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
-        }
-      }
+      pushedNotes++;
+      details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
     }
   }
 
