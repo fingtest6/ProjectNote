@@ -10,8 +10,10 @@ import {
   ArrowUp,
   ArrowDown,
   FileText,
+  Undo2,
 } from 'lucide-react';
 import type { SyncResult, SyncMode } from '../types';
+import { hasSyncUndoSnapshot, undoSync } from '../utils/syncProtocol';
 
 interface SyncReportModalProps {
   isOpen: boolean;
@@ -47,6 +49,8 @@ const MODE_CONFIG: Record<
 
 export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClose, result }) => {
   const [showDetails, setShowDetails] = useState(true);
+  const [undoing, setUndoing] = useState(false);
+  const [undoError, setUndoError] = useState<string | null>(null);
 
   if (!isOpen || !result) return null;
 
@@ -67,6 +71,29 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
 
   const hasDeletion = Boolean(result.details?.some((detail) => detail.startsWith('[删除同步]')));
   const hasRestore = Boolean(result.details?.some((detail) => detail.startsWith('[恢复删除]')));
+  const canUndo = result.success && hasSyncUndoSnapshot();
+
+  const handleUndoSync = async () => {
+    if (!canUndo || undoing) return;
+
+    const confirmed = window.confirm(
+      '将把本机数据恢复到本次同步之前，自本次同步后在本机的修改会丢失。\n\n注意：仅回滚本机，对方设备不会自动回滚。确定撤销吗？'
+    );
+    if (!confirmed) return;
+
+    setUndoing(true);
+    setUndoError(null);
+    try {
+      const ok = await undoSync();
+      if (!ok) throw new Error('没有可用的撤销快照');
+      window.alert('已撤销本次同步（仅本机）。如需让双方重新一致，请再次同步。');
+      onClose();
+    } catch (e: any) {
+      setUndoError(e?.message || '撤销失败，请重试');
+    } finally {
+      setUndoing(false);
+    }
+  };
 
   const renderDetailItem = (detail: string, index: number) => {
     let tagColor = 'bg-slate-100 text-slate-700 dark:bg-zinc-800 dark:text-zinc-300';
@@ -257,7 +284,18 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
         </div>
 
         {/* Footer */}
-        <div className="p-3.5 border-t border-slate-100 dark:border-zinc-800 flex justify-end bg-slate-50/50 dark:bg-zinc-850/50">
+        <div className="p-3.5 border-t border-slate-100 dark:border-zinc-800 flex items-center justify-end gap-2 bg-slate-50/50 dark:bg-zinc-850/50">
+          {undoError && <span className="text-[11px] text-rose-500 mr-auto">{undoError}</span>}
+          {canUndo && (
+            <button
+              onClick={handleUndoSync}
+              disabled={undoing}
+              className="touch-press px-4 py-2 rounded-xl border border-slate-200 dark:border-zinc-700 hover:bg-slate-100 dark:hover:bg-zinc-800 text-slate-700 dark:text-zinc-200 font-medium text-xs flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+              <span>{undoing ? '撤销中...' : '撤销本次同步'}</span>
+            </button>
+          )}
           <button
             onClick={onClose}
             className="touch-press px-5 py-2 rounded-xl bg-theme hover:brightness-95 text-white font-medium text-xs shadow-xs transition-all"

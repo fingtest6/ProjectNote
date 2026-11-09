@@ -1,6 +1,57 @@
-import type { NoteHistory, SyncPayload, SyncResult, SyncMode } from '../types';
+import type { Note, NoteHistory, Project, SyncPayload, SyncResult, SyncMode } from '../types';
 import { db } from '../db';
 import { writeNoteToExternalVault, deleteNoteFromExternalVault } from './vaultStorage';
+
+// ==================== 同步撤销快照 ====================
+// 在真正修改本地数据前保存一份完整快照，报告里的「撤销本次同步」用它把本机恢复到同步前。
+// 仅影响本机；对方设备已经写入的数据不会自动回滚。
+interface SyncUndoSnapshot {
+  takenAt: number;
+  projects: Project[];
+  notes: Note[];
+  histories: NoteHistory[];
+}
+
+let lastSyncUndo: SyncUndoSnapshot | null = null;
+
+async function captureUndoSnapshot(): Promise<void> {
+  try {
+    const [projects, notes, histories] = await Promise.all([
+      db.projects.toArray(),
+      db.notes.toArray(),
+      db.histories.toArray(),
+    ]);
+    lastSyncUndo = { takenAt: Date.now(), projects, notes, histories };
+  } catch (err) {
+    console.error('[Sync] 创建撤销快照失败:', err);
+    lastSyncUndo = null;
+  }
+}
+
+export function hasSyncUndoSnapshot(): boolean {
+  return Boolean(lastSyncUndo);
+}
+
+export function discardSyncUndo(): void {
+  lastSyncUndo = null;
+}
+
+export async function undoSync(): Promise<boolean> {
+  const snapshot = lastSyncUndo;
+  if (!snapshot) return false;
+
+  await db.transaction('rw', db.projects, db.notes, db.histories, async () => {
+    await db.projects.clear();
+    await db.notes.clear();
+    await db.histories.clear();
+    await db.projects.bulkAdd(snapshot.projects);
+    await db.notes.bulkAdd(snapshot.notes);
+    await db.histories.bulkAdd(snapshot.histories);
+  });
+
+  lastSyncUndo = null;
+  return true;
+}
 
 const DEVICE_ID_KEY = 'project_notes_device_id';
 const DEVICE_NAME_KEY = 'project_notes_device_name';
@@ -131,6 +182,11 @@ export async function handleServerIncomingSync(
   let newNotesAdded = 0;
   let historiesSynced = 0;
   const details: string[] = [];
+
+  // 修改本地数据之前保存快照（服务端 pull-overwrite 不改本机，无需快照）
+  if (mode !== 'pull-overwrite') {
+    await captureUndoSnapshot();
+  }
 
   // Record this sync in local storage for PC UI display
   try {
@@ -449,6 +505,8 @@ export async function syncWithRemoteServer(
     // Merge remote data into local database
     let stats;
     if (mode === 'push-overwrite') {
+      // 本机数据不变，没有可撤销的内容
+      discardSyncUndo();
       const liveNoteCount = localPayload.notes.filter((n) => !n.deletedAt).length;
       stats = {
         pulledNotes: 0,
@@ -460,6 +518,8 @@ export async function syncWithRemoteServer(
         details: [`【完全推送成功】已将本机 ${liveNoteCount} 篇便签完全覆盖写入对方设备！`],
       };
     } else {
+      // 合并前保存快照
+      await captureUndoSnapshot();
       stats = await mergeRemotePayload(data.payload, mode);
     }
 
