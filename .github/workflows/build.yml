@@ -126,8 +126,14 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # ubuntu-latest 自带 Android SDK（platform 35 / build-tools 35）与 ANDROID_HOME，
+      # 不再使用 android-actions/setup-android@v3：它仍会安装已被移除的 'tools' 包，
+      # sdkmanager 会以 "Failed to find package 'tools'" 退出 1。
+      - name: Verify Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          ls "${ANDROID_HOME}/platforms" | sort | tail -5
+          ls "${ANDROID_HOME}/build-tools" | sort | tail -5
 
       - name: Build debug APK
         run: |
