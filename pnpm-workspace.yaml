@@ -1,2 +1,6 @@
+packages:
+  - '.'
+
+# pnpm 10+ 设置：允许 esbuild 执行安装脚本
 allowBuilds:
   esbuild: true
