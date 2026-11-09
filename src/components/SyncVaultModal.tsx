@@ -12,6 +12,7 @@ import {
   Smartphone,
   Laptop,
   ShieldCheck,
+  Pencil,
   FolderCheck,
   Camera,
   ScanLine,
@@ -166,6 +167,10 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
   const [selectedServerIp, setSelectedServerIp] = useState<string>('');
   const [serverPort, setServerPort] = useState<number>(25860);
   const [serverPin, setServerPin] = useState<string>('888888');
+  const [isEditingPin, setIsEditingPin] = useState(false);
+  const [pinDraft, setPinDraft] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinSaving, setPinSaving] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
 
   // PC Active Trigger state
@@ -603,6 +608,18 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
     );
   };
 
+  // 重新生成配对二维码
+  const regeneratePairingQr = useCallback(
+    (ip: string, port: number, pin: string) => {
+      if (!ip) return;
+      const pairingUrl = `projectnotes://sync?ip=${ip}&port=${port}&pin=${pin}`;
+      QRCode.toDataURL(pairingUrl, { width: 200, margin: 1 }, (_err, url) => {
+        if (url) setQrDataUrl(url);
+      });
+    },
+    []
+  );
+
   // Select IP and regenerate QR code
   const handleSelectServerIp = (ip: string) => {
     setSelectedServerIp(ip);
@@ -610,10 +627,46 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
 
-    const pairingUrl = `projectnotes://sync?ip=${ip}&port=${serverPort}&pin=${serverPin}`;
-    QRCode.toDataURL(pairingUrl, { width: 200, margin: 1 }, (_err, url) => {
-      if (url) setQrDataUrl(url);
-    });
+    regeneratePairingQr(ip, serverPort, serverPin);
+  };
+
+  // 修改配对码（仅 Electron 桌面端）
+  const handleStartEditPin = () => {
+    setPinDraft(serverPin);
+    setPinError(null);
+    setIsEditingPin(true);
+  };
+
+  const handleSavePin = async () => {
+    const nextPin = pinDraft.trim();
+    if (!/^\d{6}$/.test(nextPin)) {
+      setPinError('配对码必须是 6 位数字');
+      return;
+    }
+
+    const electronAPI = (window as any).electronAPI;
+    if (!electronAPI?.setSyncPin) {
+      setPinError('当前环境不支持修改配对码');
+      return;
+    }
+
+    setPinSaving(true);
+    try {
+      const saved = await electronAPI.setSyncPin(nextPin);
+      const effective = String(saved || nextPin);
+      setServerPin(effective);
+      setIsEditingPin(false);
+      setPinError(null);
+      setSyncMessage({
+        text: `配对码已更新为 ${effective}，手机端需要重新输入新配对码后才能继续同步。`,
+        success: true,
+      });
+      regeneratePairingQr(selectedServerIp, serverPort, effective);
+    } catch (e: any) {
+      setPinError(e?.message || '保存失败，请重试');
+    } finally {
+      setPinSaving(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -762,13 +815,73 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
                           ))}
                         </div>
 
-                        <div className="pt-0.5 flex items-center justify-center sm:justify-start gap-2 text-xs text-slate-600 dark:text-zinc-300">
+                        <div className="pt-0.5 flex items-center justify-center sm:justify-start gap-2 text-xs text-slate-600 dark:text-zinc-300 flex-wrap">
                           <ShieldCheck className="w-3.5 h-3.5 text-theme" />
                           <span>配对安全码 (PIN)：</span>
                           <span className="font-mono font-bold text-theme bg-theme/10 px-2.5 py-0.5 rounded-lg border border-theme/20">
                             {serverPin}
                           </span>
+                          {!isEditingPin && (
+                            <button
+                              onClick={handleStartEditPin}
+                              className="touch-press flex items-center gap-1 text-[11px] font-medium text-theme hover:underline"
+                            >
+                              <Pencil className="w-3 h-3" />
+                              修改
+                            </button>
+                          )}
                         </div>
+
+                        {isEditingPin && (
+                          <div className="p-2.5 rounded-xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 space-y-2 text-left">
+                            <div className="text-[11px] text-slate-500 dark:text-zinc-400">
+                              设置新的 6 位数字配对码；修改后手机端需要重新输入。
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={pinDraft}
+                                maxLength={6}
+                                onChange={(e) => {
+                                  setPinDraft(e.target.value.replace(/\D/g, '').slice(0, 6));
+                                  setPinError(null);
+                                }}
+                                placeholder="6 位数字"
+                                className="w-24 px-2.5 py-1.5 text-xs font-mono tracking-widest rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-700 focus:outline-none focus:ring-2 focus:ring-theme/30 text-slate-900 dark:text-zinc-100"
+                              />
+                              <button
+                                onClick={() => {
+                                  setPinDraft(String(Math.floor(100000 + Math.random() * 900000)));
+                                  setPinError(null);
+                                }}
+                                disabled={pinSaving}
+                                className="touch-press px-2 py-1.5 rounded-lg text-[11px] font-medium bg-slate-100 dark:bg-zinc-800 text-slate-700 dark:text-zinc-200 border border-slate-200 dark:border-zinc-700 flex items-center gap-1 disabled:opacity-50"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                随机
+                              </button>
+                              <button
+                                onClick={handleSavePin}
+                                disabled={pinSaving || pinDraft.length !== 6}
+                                className="touch-press px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-theme text-white disabled:opacity-50"
+                              >
+                                {pinSaving ? '保存中...' : '保存'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setIsEditingPin(false);
+                                  setPinError(null);
+                                }}
+                                disabled={pinSaving}
+                                className="touch-press px-2 py-1.5 rounded-lg text-[11px] text-slate-500 dark:text-zinc-400 disabled:opacity-50"
+                              >
+                                取消
+                              </button>
+                            </div>
+                            {pinError && <div className="text-[11px] text-rose-500">{pinError}</div>}
+                          </div>
+                        )}
 
                         <p className="text-[11px] text-slate-500 dark:text-zinc-400 leading-relaxed bg-theme/5 p-2 rounded-xl border border-theme/10">
                           📱 打开手机端「项目便签」，点击右上角互联图标 -&gt;【扫码连接电脑】对准左侧二维码即可秒速同步！

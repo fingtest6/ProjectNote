@@ -79,6 +79,16 @@
         "nsis"
       ]
     },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "项目便签",
+      "deleteAppDataOnUninstall": false
+    },
     "mac": {
       "icon": "build/icon.png",
       "category": "public.app-category.productivity",

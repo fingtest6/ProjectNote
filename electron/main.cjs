@@ -15,6 +15,34 @@ const pendingDeviceTasks = new Map(); // deviceId -> task
 const pendingInvites = new Map(); // deviceId -> { mode, expiresAt } 电脑端已主动邀请过的设备
 const INVITE_TTL_MS = 2 * 60 * 1000;
 
+// 配对码持久化：保存在用户数据目录，重启 Electron 后仍然有效
+function getSyncPreferencesPath() {
+  return path.join(app.getPath('userData'), 'sync-preferences.json');
+}
+
+function loadSyncPreferences() {
+  try {
+    const file = getSyncPreferencesPath();
+    if (!fs.existsSync(file)) return;
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (typeof data.pin === 'string' && /^\d{6}$/.test(data.pin)) {
+      currentPin = data.pin;
+    }
+  } catch (err) {
+    console.error('[Sync] 读取配对码配置失败:', err.message);
+  }
+}
+
+function persistSyncPreferences() {
+  try {
+    const file = getSyncPreferencesPath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ pin: currentPin }, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('[Sync] 保存配对码配置失败:', err.message);
+  }
+}
+
 // Get local network IPv4 addresses with smart LAN prioritization (192.168.x.x > 10.x.x.x > virtual adapters)
 function getLocalIpv4Addresses() {
   const interfaces = os.networkInterfaces();
@@ -358,6 +386,8 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  loadSyncPreferences();
+
   // IPC: Directory Picker
   ipcMain.handle('vault:select-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -400,9 +430,14 @@ app.whenReady().then(() => {
     };
   });
 
-  // IPC: Update PIN
+  // IPC: Update PIN（6 位数字，持久化到用户数据目录）
   ipcMain.handle('sync:set-pin', async (_event, newPin) => {
-    currentPin = String(newPin);
+    const pin = String(newPin ?? '').trim();
+    if (!/^\d{6}$/.test(pin)) {
+      throw new Error('配对码必须是 6 位数字');
+    }
+    currentPin = pin;
+    persistSyncPreferences();
     return currentPin;
   });
 
