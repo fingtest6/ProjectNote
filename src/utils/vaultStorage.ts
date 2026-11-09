@@ -190,6 +190,9 @@ export async function pickVaultFolder(defaultPath?: string): Promise<string | nu
 
 // Save single note to external vault
 export async function writeNoteToExternalVault(note: Note, project?: Project): Promise<boolean> {
+  // 已删除（墓碑）的便签不写入外部镜像
+  if (note.deletedAt) return false;
+
   const cfg = getVaultConfig();
   if (!cfg.enabled) return false;
 

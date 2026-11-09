@@ -1,6 +1,6 @@
 import type { NoteHistory, SyncPayload, SyncResult, SyncMode } from '../types';
 import { db } from '../db';
-import { writeNoteToExternalVault } from './vaultStorage';
+import { writeNoteToExternalVault, deleteNoteFromExternalVault } from './vaultStorage';
 
 const DEVICE_ID_KEY = 'project_notes_device_id';
 const DEVICE_NAME_KEY = 'project_notes_device_name';
@@ -162,7 +162,11 @@ export async function handleServerIncomingSync(
       newNotesAdded = clientPayload.notes.length;
       for (const note of clientPayload.notes) {
         const proj = (clientPayload.projects || []).find((p) => p.id === note.projectId);
-        writeNoteToExternalVault(note, proj);
+        if (note.deletedAt) {
+          deleteNoteFromExternalVault(note.title || '无标题', proj?.name || '默认项目').catch(() => {});
+        } else {
+          writeNoteToExternalVault(note, proj);
+        }
       }
     }
     if (clientPayload.histories && clientPayload.histories.length > 0) {
@@ -176,7 +180,7 @@ export async function handleServerIncomingSync(
 
   // 2. pull-overwrite: Mobile wants server's exact data, server does NOT change!
   if (mode === 'pull-overwrite') {
-    const currentNotes = await db.notes.count();
+    const currentNotes = await db.notes.filter((n) => !n.deletedAt).count();
     details.push(`手机请求全量拉取：电脑端保持不变，已向手机传输全部 ${currentNotes} 篇便签`);
     return { pulledNotes: 0, pushedNotes: currentNotes, pulledProjects: 0, pushedProjects: 0, newNotesAdded: 0, historiesSynced: 0, details };
   }
@@ -230,7 +234,11 @@ export async function mergeRemotePayload(
       newNotesAdded = remote.notes.length;
       for (const note of remote.notes) {
         const proj = remote.projects.find((p) => p.id === note.projectId);
-        writeNoteToExternalVault(note, proj);
+        if (note.deletedAt) {
+          deleteNoteFromExternalVault(note.title || '无标题', proj?.name || '默认项目').catch(() => {});
+        } else {
+          writeNoteToExternalVault(note, proj);
+        }
       }
     }
     if (remote.histories.length > 0) {
@@ -242,7 +250,7 @@ export async function mergeRemotePayload(
     return { pulledNotes, pushedNotes, pulledProjects, pushedProjects, newNotesAdded, historiesSynced, details };
   }
 
-  // --- 1. Merge Projects ---
+  // --- 1. Merge Projects（墓碑同样参与 updatedAt 比较，删除才能双向传播） ---
   for (const remProj of remote.projects) {
     const locProj = localProjectMap.get(remProj.id);
     if (!locProj) {
@@ -251,16 +259,23 @@ export async function mergeRemotePayload(
         pulledProjects++;
         details.push(`[拉取项目] 新增项目分类「${remProj.name}」`);
       }
-    } else if (mode !== 'new-only') {
-      if (remProj.deletedAt && !locProj.deletedAt) {
-        await db.projects.delete(remProj.id);
-        pulledProjects++;
-      } else if (remProj.updatedAt > locProj.updatedAt) {
-        await db.projects.put(remProj);
-        pulledProjects++;
-        details.push(`[更新项目] 项目「${remProj.name}」已更新为远端最新设置`);
-      } else if (locProj.updatedAt > remProj.updatedAt) {
-        pushedProjects++;
+      continue;
+    }
+
+    if (mode === 'new-only') continue;
+
+    if (remProj.updatedAt > locProj.updatedAt) {
+      await db.projects.put(remProj);
+      pulledProjects++;
+      details.push(
+        remProj.deletedAt
+          ? `[删除同步] 项目分类「${remProj.name}」已在对方删除`
+          : `[更新项目] 项目「${remProj.name}」已更新为远端最新设置`
+      );
+    } else if (locProj.updatedAt > remProj.updatedAt) {
+      pushedProjects++;
+      if (locProj.deletedAt) {
+        details.push(`[删除同步] 本地已删除的项目「${locProj.name}」将同步到对方`);
       }
     }
   }
@@ -268,10 +283,15 @@ export async function mergeRemotePayload(
   // Count local projects that remote doesn't have
   const remoteProjIds = new Set(remote.projects.map((p) => p.id));
   for (const locProj of localProjects) {
-    if (!remoteProjIds.has(locProj.id)) {
-      pushedProjects++;
-      details.push(`[推送项目] 本地新项目「${locProj.name}」已推送至电脑`);
-    }
+    if (remoteProjIds.has(locProj.id)) continue;
+    if (mode === 'new-only' && locProj.deletedAt) continue;
+
+    pushedProjects++;
+    details.push(
+      locProj.deletedAt
+        ? `[删除同步] 本地已删除的项目「${locProj.name}」将同步到对方`
+        : `[推送项目] 本地新项目「${locProj.name}」已推送至对方`
+    );
   }
 
   // --- 2. Merge Notes ---
@@ -286,24 +306,28 @@ export async function mergeRemotePayload(
         const proj = await db.projects.get(remNote.projectId);
         writeNoteToExternalVault(remNote, proj);
       }
-    } else {
-      if (mode === 'new-only') {
-        // In new-only mode, skip existing notes completely
-        continue;
-      }
-      if (remNote.deletedAt && !locNote.deletedAt) {
-        await db.notes.delete(remNote.id);
-        pulledNotes++;
-        details.push(`[删除同步] 便签「${remNote.title}」在电脑端已删除`);
-      } else if (remNote.updatedAt > locNote.updatedAt) {
-        await db.notes.put(remNote);
-        pulledNotes++;
-        details.push(`[拉取更新] 便签「${remNote.title}」(电脑端版本更新)`);
-        const proj = await db.projects.get(remNote.projectId);
+      continue;
+    }
+
+    if (mode === 'new-only') continue;
+
+    if (remNote.updatedAt > locNote.updatedAt) {
+      await db.notes.put(remNote);
+      pulledNotes++;
+      const proj = await db.projects.get(remNote.projectId);
+      if (remNote.deletedAt) {
+        details.push(`[删除同步] 便签「${remNote.title || '无标题'}」已在对方删除`);
+        deleteNoteFromExternalVault(remNote.title || '无标题', proj?.name || '默认项目').catch(() => {});
+      } else {
+        details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
         writeNoteToExternalVault(remNote, proj);
-      } else if (locNote.updatedAt > remNote.updatedAt) {
-        pushedNotes++;
-        details.push(`[推送更新] 便签「${locNote.title}」(手机端版本更新)`);
+      }
+    } else if (locNote.updatedAt > remNote.updatedAt) {
+      pushedNotes++;
+      if (locNote.deletedAt) {
+        details.push(`[删除同步] 本地已删除的便签「${locNote.title || '无标题'}」将同步到对方`);
+      } else {
+        details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
       }
     }
   }
@@ -311,10 +335,15 @@ export async function mergeRemotePayload(
   // Count local notes that remote doesn't have
   const remoteNoteIds = new Set(remote.notes.map((n) => n.id));
   for (const locNote of localNotes) {
-    if (!remoteNoteIds.has(locNote.id)) {
-      pushedNotes++;
-      details.push(`[推送新增] 本地新建便签「${locNote.title || '无标题'}」已推送到电脑`);
-    }
+    if (remoteNoteIds.has(locNote.id)) continue;
+    if (mode === 'new-only' && locNote.deletedAt) continue;
+
+    pushedNotes++;
+    details.push(
+      locNote.deletedAt
+        ? `[删除同步] 本地已删除的便签「${locNote.title || '无标题'}」将同步到对方`
+        : `[推送新增] 本地新建便签「${locNote.title || '无标题'}」已推送到对方`
+    );
   }
 
   // --- 3. Merge Git Histories ---
@@ -422,14 +451,15 @@ export async function syncWithRemoteServer(
     // Merge remote data into local database
     let stats;
     if (mode === 'push-overwrite') {
+      const liveNoteCount = localPayload.notes.filter((n) => !n.deletedAt).length;
       stats = {
         pulledNotes: 0,
-        pushedNotes: localPayload.notes.length,
+        pushedNotes: liveNoteCount,
         pulledProjects: 0,
         pushedProjects: localPayload.projects.length,
         newNotesAdded: 0,
         historiesSynced: 0,
-        details: [`【完全推送成功】已将本机 ${localPayload.notes.length} 篇便签完全覆盖写入电脑端！`],
+        details: [`【完全推送成功】已将本机 ${liveNoteCount} 篇便签完全覆盖写入对方设备！`],
       };
     } else {
       stats = await mergeRemotePayload(data.payload, mode);

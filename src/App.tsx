@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { Plus, StickyNote, FileUp } from 'lucide-react';
-import { db, initSeedData } from './db';
+import { db, initSeedData, purgeExpiredTombstones } from './db';
 import type { Note, Project, NoteHistory } from './types';
 import { importMarkdownFile, parseImportedMarkdown } from './utils/exporter';
 import { Header } from './components/Header';
@@ -40,12 +40,16 @@ const translateInviteMode = (mode: SyncMode): SyncMode => {
 export const App: React.FC = () => {
   // Initialize Database Seed on first mount
   useEffect(() => {
-    initSeedData();
+    (async () => {
+      await initSeedData();
+      await purgeExpiredTombstones();
+    })().catch((err) => console.error('初始化本地数据库失败:', err));
   }, []);
 
   // Fetch all projects & notes reactively from Dexie
-  const projects = useLiveQuery(() => db.projects.toArray()) || [];
-  const allNotes = useLiveQuery(() => db.notes.toArray()) || [];
+  // 只把「未删除」的数据暴露给界面，墓碑仅用于多端同步传播删除
+  const projects = useLiveQuery(() => db.projects.filter((p) => !p.deletedAt).toArray()) || [];
+  const allNotes = useLiveQuery(() => db.notes.filter((n) => !n.deletedAt).toArray()) || [];
 
   const STORAGE_KEY_ACTIVE_PROJECT = 'project_notes_saved_project_id';
 
@@ -86,8 +90,8 @@ export const App: React.FC = () => {
   useEffect(() => {
     // 1. In-page global fallback
     (window as any).__getSyncCounts = async () => {
-      const pCount = await db.projects.count();
-      const nCount = await db.notes.count();
+      const pCount = await db.projects.filter((p) => !p.deletedAt).count();
+      const nCount = await db.notes.filter((n) => !n.deletedAt).count();
       return { noteCount: nCount, projectCount: pCount };
     };
 
@@ -133,8 +137,8 @@ export const App: React.FC = () => {
     if ((window as any).electronAPI?.onGetSyncCounts) {
       removeCountListener = (window as any).electronAPI.onGetSyncCounts(async (req: any) => {
         try {
-          const pCount = await db.projects.count();
-          const nCount = await db.notes.count();
+          const pCount = await db.projects.filter((p) => !p.deletedAt).count();
+          const nCount = await db.notes.filter((n) => !n.deletedAt).count();
           (window as any).electronAPI.sendSyncResponse(req.id, true, {
             noteCount: nCount,
             projectCount: pCount,
@@ -448,13 +452,22 @@ export const App: React.FC = () => {
   };
 
   const handleDeleteProject = async (id: string) => {
-    // Delete project and all notes inside it
-    const notesInProj = allNotes.filter((n) => n.projectId === id);
-    for (const n of notesInProj) {
-      await db.histories.where('noteId').equals(n.id).delete();
-      await db.notes.delete(n.id);
+    const now = Date.now();
+    const project = await db.projects.get(id);
+    if (!project) return;
+
+    // 软删除：项目与其下所有便签都写入墓碑，删除动作才能通过同步传播到其他设备
+    const notesInProj = await db.notes.where('projectId').equals(id).toArray();
+    const liveNotes = notesInProj.filter((n) => !n.deletedAt);
+    if (liveNotes.length > 0) {
+      await db.notes.bulkPut(liveNotes.map((n) => ({ ...n, deletedAt: now, updatedAt: now })));
+      for (const n of liveNotes) {
+        deleteNoteFromExternalVault(n.title, project.name).catch(() => {});
+      }
     }
-    await db.projects.delete(id);
+
+    await db.projects.put({ ...project, deletedAt: now, updatedAt: now });
+
     const remaining = projects.filter((p) => p.id !== id);
     if (remaining.length > 0) {
       selectProject(remaining[0].id);
@@ -582,12 +595,15 @@ export const App: React.FC = () => {
 
   const handleDeleteNote = async (id: string) => {
     const existing = await db.notes.get(id);
-    if (existing) {
-      const proj = projects.find((p) => p.id === existing.projectId);
-      deleteNoteFromExternalVault(existing.title, proj?.name || '默认项目').catch(() => {});
-    }
-    await db.histories.where('noteId').equals(id).delete();
-    await db.notes.delete(id);
+    if (!existing || existing.deletedAt) return;
+
+    const now = Date.now();
+    // 软删除：保留一条墓碑记录（含删除时间），其他设备同步时据此删除同一便签
+    await db.notes.put({ ...existing, deletedAt: now, updatedAt: now });
+
+    const proj = projects.find((p) => p.id === existing.projectId);
+    deleteNoteFromExternalVault(existing.title, proj?.name || '默认项目').catch(() => {});
+
     if (viewingNote?.id === id) {
       setIsDetailOpen(false);
       setViewingNote(null);

@@ -18,6 +18,31 @@ export class NotesDatabase extends Dexie {
 
 export const db = new NotesDatabase();
 
+// 墓碑（软删除记录）在多端之间保留 30 天，用于把「删除」传播给长时间离线的设备；
+// 超过保留期后连同其历史版本一起物理清理，避免数据库无限膨胀。
+const TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export async function purgeExpiredTombstones() {
+  const cutoff = Date.now() - TOMBSTONE_TTL_MS;
+
+  const expiredNotes = await db.notes
+    .filter((note) => Boolean(note.deletedAt) && (note.deletedAt as number) < cutoff)
+    .toArray();
+
+  for (const note of expiredNotes) {
+    await db.histories.where('noteId').equals(note.id).delete();
+    await db.notes.delete(note.id);
+  }
+
+  const expiredProjects = await db.projects
+    .filter((project) => Boolean(project.deletedAt) && (project.deletedAt as number) < cutoff)
+    .toArray();
+
+  if (expiredProjects.length > 0) {
+    await db.projects.bulkDelete(expiredProjects.map((project) => project.id));
+  }
+}
+
 export async function initSeedData() {
   const projectCount = await db.projects.count();
   if (projectCount > 0) return;
