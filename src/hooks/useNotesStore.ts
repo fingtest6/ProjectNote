@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, initSeedData, purgeExpiredTombstones } from '../db';
+import { db, initSeedData, purgeExpiredTombstoneHistories } from '../db';
 import type { Note, NoteHistory, Project } from '../types';
 import { deleteNoteFromExternalVault, writeNoteToExternalVault } from '../utils/vaultStorage';
 import { importMarkdownFile, parseImportedMarkdown } from '../utils/exporter';
@@ -16,11 +16,11 @@ const STORAGE_KEY_ACTIVE_PROJECT = 'project_notes_saved_project_id';
  * 这里不持有任何弹窗、搜索等纯界面状态，便于单独复用与测试。
  */
 export function useNotesStore() {
-  // 首次挂载：写入种子数据并回收过期墓碑
+  // 首次挂载：写入种子数据，清理已删除便签的历史快照（墓碑本身保留）
   useEffect(() => {
     (async () => {
       await initSeedData();
-      await purgeExpiredTombstones();
+      await purgeExpiredTombstoneHistories();
     })().catch((err) => console.error('初始化本地数据库失败:', err));
   }, []);
 
@@ -110,7 +110,16 @@ export function useNotesStore() {
       const notesInProject = await db.notes.where('projectId').equals(id).toArray();
       const liveNotes = notesInProject.filter((n) => !n.deletedAt);
       if (liveNotes.length > 0) {
-        await db.notes.bulkPut(liveNotes.map((n) => ({ ...n, deletedAt: now, updatedAt: now })));
+        await db.notes.bulkPut(
+          liveNotes.map((n) => ({
+            ...n,
+            content: '',
+            images: [],
+            tags: [],
+            deletedAt: now,
+            updatedAt: now,
+          }))
+        );
         for (const note of liveNotes) {
           deleteNoteFromExternalVault(note.title, project.name).catch(() => {});
         }
@@ -211,8 +220,16 @@ export function useNotesStore() {
       if (!existing || existing.deletedAt) return false;
 
       const now = Date.now();
-      // 软删除：保留墓碑（含删除时间），其他设备同步时据此删除同一便签
-      await db.notes.put({ ...existing, deletedAt: now, updatedAt: now });
+      // 软删除：保留最小墓碑（id / 标题 / 删除时间），用于把删除状态同步给其他设备。
+      // 正文、图片、标签清空，墓碑才能长期保留而不占用空间。
+      await db.notes.put({
+        ...existing,
+        content: '',
+        images: [],
+        tags: [],
+        deletedAt: now,
+        updatedAt: now,
+      });
 
       const project = projects.find((p) => p.id === existing.projectId);
       deleteNoteFromExternalVault(existing.title, project?.name || '默认项目').catch(() => {});

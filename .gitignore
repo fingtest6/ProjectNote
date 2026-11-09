@@ -24,6 +24,10 @@ android/capacitor-cordova-android-plugins/
 .sync_vault_cache.json
 *.log
 
+# ---------- 临时脚本（本机工具使用） ----------
+.ci-watch.mjs
+.git-relay.mjs
+
 # ---------- 遗留启动器产物（旧 .bat 方案，不再维护） ----------
 /项目便签.exe
 /app
