@@ -1,9 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
+import React, { useMemo, useState } from 'react';
 import { Plus, StickyNote, FileUp } from 'lucide-react';
-import { db, initSeedData, purgeExpiredTombstones } from './db';
-import type { Note, Project, NoteHistory } from './types';
-import { importMarkdownFile, parseImportedMarkdown } from './utils/exporter';
+import type { Note, NoteHistory } from './types';
 import { Header } from './components/Header';
 import { ProjectDrawer } from './components/ProjectDrawer';
 import { NoteCard } from './components/NoteCard';
@@ -16,289 +13,35 @@ import { SyncVaultModal } from './components/SyncVaultModal';
 import { SyncConfirmationModal } from './components/SyncConfirmationModal';
 import { SyncReportModal } from './components/SyncReportModal';
 import { useMobileBackHandler } from './hooks/useMobileBackHandler';
-import { writeNoteToExternalVault, deleteNoteFromExternalVault } from './utils/vaultStorage';
-import {
-  handleServerIncomingSync,
-  generateLocalSyncPayload,
-  getLastSyncTarget,
-  syncWithRemoteServer,
-  pollDeviceTask,
-} from './utils/syncProtocol';
-import type { SyncConfirmationRequest, SyncMode, SyncResult } from './types';
-
-/**
- * 电脑端主动发起同步时，模式是以「电脑」为视角选择的；手机端真正执行时要换算成自己的视角：
- *  - 电脑端「以电脑为准覆盖手机」 == 手机端「拉取电脑数据并覆盖本机」
- *  - 电脑端「以手机为准覆盖电脑」 == 手机端「推送本机数据并覆盖电脑」
- */
-const translateInviteMode = (mode: SyncMode): SyncMode => {
-  if (mode === 'push-overwrite') return 'pull-overwrite';
-  if (mode === 'pull-overwrite') return 'push-overwrite';
-  return mode;
-};
+import { useNotesStore, useNoteHistories } from './hooks/useNotesStore';
+import { useSyncSession } from './hooks/useSyncSession';
 
 export const App: React.FC = () => {
-  // Initialize Database Seed on first mount
-  useEffect(() => {
-    (async () => {
-      await initSeedData();
-      await purgeExpiredTombstones();
-    })().catch((err) => console.error('初始化本地数据库失败:', err));
-  }, []);
+  const {
+    projects,
+    allNotes,
+    activeProjectId,
+    activeProject,
+    projectNoteCounts,
+    selectProject,
+    createProject,
+    updateProject,
+    deleteProject,
+    saveNote,
+    deleteNote,
+    togglePin,
+    duplicateNote,
+    restoreVersion,
+    importMarkdown,
+  } = useNotesStore();
 
-  // Fetch all projects & notes reactively from Dexie
-  // 只把「未删除」的数据暴露给界面，墓碑仅用于多端同步传播删除
-  const projects = useLiveQuery(() => db.projects.filter((p) => !p.deletedAt).toArray()) || [];
-  const allNotes = useLiveQuery(() => db.notes.filter((n) => !n.deletedAt).toArray()) || [];
-
-  const STORAGE_KEY_ACTIVE_PROJECT = 'project_notes_saved_project_id';
-
-  // Active project ID state with persistent storage
-  const [activeProjectId, setActiveProjectId] = useState<string>(() => {
-    return localStorage.getItem(STORAGE_KEY_ACTIVE_PROJECT) || '';
-  });
-
-  const selectProject = (id: string) => {
-    setActiveProjectId(id);
-    localStorage.setItem(STORAGE_KEY_ACTIVE_PROJECT, id);
-  };
-
-  // Synchronize active project ID once projects load
-  useEffect(() => {
-    if (projects.length > 0) {
-      const savedId = localStorage.getItem(STORAGE_KEY_ACTIVE_PROJECT);
-      const isSavedValid = savedId && projects.some((p) => p.id === savedId);
-
-      if (isSavedValid) {
-        if (activeProjectId !== savedId) {
-          setActiveProjectId(savedId);
-        }
-      } else if (!projects.some((p) => p.id === activeProjectId)) {
-        const defaultProj = projects.find((p) => p.isDefault) || projects[0];
-        setActiveProjectId(defaultProj.id);
-        localStorage.setItem(STORAGE_KEY_ACTIVE_PROJECT, defaultProj.id);
-      }
-    }
-  }, [projects, activeProjectId]);
-
-  // Confirmation & Sync Report States
-  const [incomingSyncRequest, setIncomingSyncRequest] = useState<SyncConfirmationRequest | null>(null);
-  const [activeSyncReport, setActiveSyncReport] = useState<SyncResult | null>(null);
-  const handleAcceptSyncRef = React.useRef<((req: SyncConfirmationRequest) => Promise<void>) | null>(null);
-
-  // Bridge for Electron LAN sync server incoming phone requests
-  useEffect(() => {
-    // 1. In-page global fallback
-    (window as any).__getSyncCounts = async () => {
-      const pCount = await db.projects.filter((p) => !p.deletedAt).count();
-      const nCount = await db.notes.filter((n) => !n.deletedAt).count();
-      return { noteCount: nCount, projectCount: pCount };
-    };
-
-    (window as any).__handleIncomingPhoneSync = async (
-      remotePayload: any,
-      mode: any = 'smart-merge'
-    ) => {
-      console.log('[LAN Sync] Handling incoming phone sync with mode:', mode);
-      const stats = await handleServerIncomingSync(remotePayload, mode);
-      const localPayload = await generateLocalSyncPayload();
-      return {
-        ...localPayload,
-        stats,
-      };
-    };
-
-    // 2. Native Electron IPC Listeners
-    let removeSyncListener: (() => void) | null = null;
-    let removeCountListener: (() => void) | null = null;
-
-    if ((window as any).electronAPI?.onIncomingSync) {
-      removeSyncListener = (window as any).electronAPI.onIncomingSync((req: any) => {
-        console.log('[LAN Sync IPC] Incoming confirmation request:', req);
-        const confReq: SyncConfirmationRequest = {
-          id: req.id,
-          from: req.from || { deviceId: 'unknown', deviceName: '移动端设备' },
-          mode: req.mode || 'smart-merge',
-          summary: req.summary,
-          payload: req.payload,
-        };
-
-        // If this is a mobile reply to an invitation initiated by PC, auto-accept and merge
-        if (req.from?.isReplyToInvite) {
-          handleAcceptSyncRef.current?.(confReq);
-          return;
-        }
-
-        // Prompt user on this device for explicit confirmation before syncing!
-        setIncomingSyncRequest(confReq);
-      });
-    }
-
-    if ((window as any).electronAPI?.onGetSyncCounts) {
-      removeCountListener = (window as any).electronAPI.onGetSyncCounts(async (req: any) => {
-        try {
-          const pCount = await db.projects.filter((p) => !p.deletedAt).count();
-          const nCount = await db.notes.filter((n) => !n.deletedAt).count();
-          (window as any).electronAPI.sendSyncResponse(req.id, true, {
-            noteCount: nCount,
-            projectCount: pCount,
-          });
-        } catch {
-          (window as any).electronAPI.sendSyncResponse(req.id, false, { noteCount: 0, projectCount: 0 });
-        }
-      });
-    }
-
-    return () => {
-      delete (window as any).__handleIncomingPhoneSync;
-      delete (window as any).__getSyncCounts;
-      if (removeSyncListener) removeSyncListener();
-      if (removeCountListener) removeCountListener();
-    };
-  }, []);
-
-  // Handle accepting incoming sync request on this device
-  const handleAcceptSync = async (req: SyncConfirmationRequest) => {
-    try {
-      if (req.from.deviceId === 'pc-server') {
-        // 手机端接受了电脑端发起的同步邀请：由手机端向电脑端发起正式同步
-        const lastTarget = getLastSyncTarget();
-        try {
-          const res = await syncWithRemoteServer(lastTarget.serverUrl, lastTarget.pin, req.mode, true);
-          setActiveSyncReport(res);
-        } finally {
-          // 同步期间保持确认弹窗显示「正在同步...」，完成后才关闭
-          setIncomingSyncRequest(null);
-        }
-        return;
-      }
-
-      // 正常接收：把对端数据合并进本机
-      const stats = await handleServerIncomingSync(req.payload, req.mode);
-      const localPayload = await generateLocalSyncPayload();
-
-      // 把本机合并后的完整数据回传给发起方（Electron IPC）
-      const electronAPI = (window as any).electronAPI;
-      if (electronAPI?.sendSyncResponse) {
-        electronAPI.sendSyncResponse(req.id, true, {
-          ...localPayload,
-          stats,
-        });
-      }
-
-      setIncomingSyncRequest(null);
-
-      // 接收端同样展示一份完整的同步报告
-      setActiveSyncReport({
-        success: true,
-        accepted: true,
-        mode: req.mode,
-        perspective: 'receiver',
-        pulledNotes: stats.pulledNotes,
-        pushedNotes: stats.pushedNotes,
-        pulledProjects: stats.pulledProjects,
-        pushedProjects: stats.pushedProjects,
-        newNotesAdded: stats.newNotesAdded,
-        historiesSynced: stats.historiesSynced,
-        message: `已成功完成与【${req.from.deviceName}】的互联同步！`,
-        details: stats.details,
-      });
-    } catch (e: any) {
-      console.error('Accept sync error:', e);
-      const electronAPI = (window as any).electronAPI;
-      if (electronAPI?.sendSyncResponse) {
-        electronAPI.sendSyncResponse(req.id, false, null, e.message);
-      }
-      setIncomingSyncRequest(null);
-    }
-  };
-  handleAcceptSyncRef.current = handleAcceptSync;
-
-  // Handle rejecting incoming sync request
-  const handleRejectSync = (req: SyncConfirmationRequest) => {
-    if (req.from.deviceId !== 'pc-server') {
-      const electronAPI = (window as any).electronAPI;
-      if (electronAPI?.sendSyncResponse) {
-        electronAPI.sendSyncResponse(req.id, false, null, '本端用户拒绝了同步请求');
-      }
-    }
-    setIncomingSyncRequest(null);
-  };
-
-  // 客户端（手机 / 普通浏览器）：后台轮询电脑端下发的同步邀请
-  useEffect(() => {
-    const isElectron = Boolean((window as any).electronAPI);
-    if (isElectron) return;
-
-    let isMounted = true;
-    const controller = new AbortController();
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-    const startPoll = async () => {
-      while (isMounted) {
-        const lastTarget = getLastSyncTarget();
-
-        // 还未配置电脑地址时保持等待；之后填好地址无需刷新页面即可自动开始监听
-        if (!lastTarget.serverUrl) {
-          await wait(3000);
-          continue;
-        }
-
-        try {
-          await pollDeviceTask(
-            lastTarget.serverUrl,
-            (task) => {
-              if (!task || task.type !== 'sync-invitation') return;
-
-              // 电脑端邀请本机同步：必须由本机用户点击确认后才会真正同步
-              setIncomingSyncRequest({
-                id: Date.now(),
-                from: { deviceId: 'pc-server', deviceName: task.from || '电脑端' },
-                mode: translateInviteMode(task.mode || 'smart-merge'),
-                summary: {
-                  noteCount: task.noteCount ?? 0,
-                  projectCount: task.projectCount ?? 0,
-                },
-                payload: {
-                  deviceId: 'pc-server',
-                  deviceName: task.from || '电脑端',
-                  timestamp: Date.now(),
-                  projects: [],
-                  notes: [],
-                  histories: [],
-                },
-              });
-            },
-            controller.signal
-          );
-        } catch {
-          await wait(4000);
-        }
-
-        await wait(1200);
-      }
-    };
-
-    startPoll();
-
-    return () => {
-      isMounted = false;
-      controller.abort();
-    };
-  }, []);
-
-  const activeProject = useMemo(() => {
-    return projects.find((p) => p.id === activeProjectId) || null;
-  }, [projects, activeProjectId]);
-
-  // Project note counts
-  const projectNoteCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    allNotes.forEach((n) => {
-      counts[n.projectId] = (counts[n.projectId] || 0) + 1;
-    });
-    return counts;
-  }, [allNotes]);
+  const {
+    incomingSyncRequest,
+    activeSyncReport,
+    acceptSync,
+    rejectSync,
+    setActiveSyncReport,
+  } = useSyncSession();
 
   // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('');
@@ -404,77 +147,26 @@ export const App: React.FC = () => {
       isOpen: Boolean(incomingSyncRequest),
       close: () => {
         // 安卓返回键等同于点「拒绝」，避免发起方一直干等到 45 秒超时
-        if (incomingSyncRequest) handleRejectSync(incomingSyncRequest);
+        if (incomingSyncRequest) rejectSync(incomingSyncRequest);
       },
     },
   ]);
 
-  // Histories for Git Diff modal
-  const diffHistories = useLiveQuery(
-    async () => {
-      if (!gitDiffNote) return [];
-      return await db.histories.where('noteId').equals(gitDiffNote.id).toArray();
-    },
-    [gitDiffNote]
-  ) || [];
+  // Histories for Git Diff modal / detail view
+  const diffHistories = useNoteHistories(gitDiffNote?.id);
+  const detailHistories = useNoteHistories(viewingNote?.id);
 
-  // Detail view histories count
-  const detailHistories = useLiveQuery(
-    async () => {
-      if (!viewingNote) return [];
-      return await db.histories.where('noteId').equals(viewingNote.id).toArray();
-    },
-    [viewingNote]
-  ) || [];
-
-  // ================= Project CRUD =================
+  // ================= Project actions（数据逻辑在 useNotesStore） =================
   const handleCreateProject = async (name: string, color: string, description: string) => {
-    const now = Date.now();
-    const newProj: Project = {
-      id: 'proj-' + Math.random().toString(36).substring(2, 9),
-      name,
-      color,
-      description,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await db.projects.add(newProj);
-    selectProject(newProj.id);
+    await createProject(name, color, description);
   };
 
-  const handleUpdateProject = async (id: string, name: string, color: string, description: string) => {
-    await db.projects.update(id, {
-      name,
-      color,
-      description,
-      updatedAt: Date.now(),
-    });
-  };
+  const handleUpdateProject = (id: string, name: string, color: string, description: string) =>
+    updateProject(id, name, color, description);
 
-  const handleDeleteProject = async (id: string) => {
-    const now = Date.now();
-    const project = await db.projects.get(id);
-    if (!project) return;
+  const handleDeleteProject = (id: string) => deleteProject(id);
 
-    // 软删除：项目与其下所有便签都写入墓碑，删除动作才能通过同步传播到其他设备
-    const notesInProj = await db.notes.where('projectId').equals(id).toArray();
-    const liveNotes = notesInProj.filter((n) => !n.deletedAt);
-    if (liveNotes.length > 0) {
-      await db.notes.bulkPut(liveNotes.map((n) => ({ ...n, deletedAt: now, updatedAt: now })));
-      for (const n of liveNotes) {
-        deleteNoteFromExternalVault(n.title, project.name).catch(() => {});
-      }
-    }
-
-    await db.projects.put({ ...project, deletedAt: now, updatedAt: now });
-
-    const remaining = projects.filter((p) => p.id !== id);
-    if (remaining.length > 0) {
-      selectProject(remaining[0].id);
-    }
-  };
-
-  // ================= Note CRUD & Git Snapshots =================
+  // ================= Note actions（数据逻辑在 useNotesStore） =================
   const handleOpenCreateNote = () => {
     setEditingNote(null);
     setIsEditorOpen(true);
@@ -488,213 +180,46 @@ export const App: React.FC = () => {
     setIsEditorOpen(true);
   };
 
-  // Import local .md / .markdown / .txt file into current project
   const handleImportMarkdown = async () => {
-    const res = await importMarkdownFile();
-    if (!res.success || res.cancelled || typeof res.content !== 'string') {
-      return;
-    }
-
-    const parsed = parseImportedMarkdown(res.filename || '导入便签.md', res.content);
-    await handleSaveNote(
-      {
-        projectId: activeProjectId,
-        title: parsed.title,
-        content: parsed.content,
-        images: parsed.images,
-        pinned: false,
-      },
-      `📥 从文件导入「${res.filename || parsed.title}」`
-    );
+    await importMarkdown();
   };
 
   const handleSaveNote = async (noteData: Partial<Note>, commitMessage: string) => {
-    const now = Date.now();
-    let savedNote: Note | null = null;
-
-    if (noteData.id) {
-      // Update existing note
-      const existing = await db.notes.get(noteData.id);
-      if (!existing) return;
-
-      const updatedNote: Note = {
-        ...existing,
-        projectId: noteData.projectId || existing.projectId,
-        title: noteData.title || existing.title,
-        content: noteData.content ?? existing.content,
-        pinned: noteData.pinned ?? existing.pinned,
-        images: noteData.images ?? existing.images,
-        updatedAt: now,
-      };
-
-      await db.notes.put(updatedNote);
-      savedNote = updatedNote;
-
-      // Create a new Git-like History Snapshot
-      const prevHistories = await db.histories.where('noteId').equals(existing.id).toArray();
-      const nextVersion = prevHistories.length > 0
-        ? Math.max(...prevHistories.map((h) => h.version)) + 1
-        : 1;
-
-      const newHistory: NoteHistory = {
-        id: 'hist-' + Math.random().toString(36).substring(2, 9),
-        noteId: existing.id,
-        version: nextVersion,
-        commitMessage: commitMessage || '更新便签内容',
-        title: updatedNote.title,
-        content: updatedNote.content,
-        timestamp: now,
-        charCount: updatedNote.content.length,
-      };
-
-      await db.histories.add(newHistory);
-
-      // If this note is open in detail view, update state
-      if (viewingNote?.id === existing.id) {
-        setViewingNote(updatedNote);
-      }
-    } else {
-      // Create new note
-      const newId = 'note-' + Math.random().toString(36).substring(2, 9);
-      const newNote: Note = {
-        id: newId,
-        projectId: noteData.projectId || activeProjectId,
-        title: noteData.title || '无标题便签',
-        content: noteData.content || '',
-        pinned: noteData.pinned || false,
-        images: noteData.images || [],
-        tags: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      await db.notes.add(newNote);
-      savedNote = newNote;
-
-      // Create Initial Version Snapshot (v1)
-      const initialHistory: NoteHistory = {
-        id: 'hist-' + Math.random().toString(36).substring(2, 9),
-        noteId: newId,
-        version: 1,
-        commitMessage: commitMessage || '初始创建便签',
-        title: newNote.title,
-        content: newNote.content,
-        timestamp: now,
-        charCount: newNote.content.length,
-      };
-
-      await db.histories.add(initialHistory);
-    }
-
-    // Mirror to external storage vault asynchronously
-    if (savedNote) {
-      const proj = projects.find((p) => p.id === savedNote!.projectId);
-      writeNoteToExternalVault(savedNote, proj).catch(() => {});
+    const saved = await saveNote(noteData, commitMessage);
+    if (saved && viewingNote?.id === saved.id) {
+      setViewingNote(saved);
     }
   };
 
   const handleDeleteNote = async (id: string) => {
-    const existing = await db.notes.get(id);
-    if (!existing || existing.deletedAt) return;
-
-    const now = Date.now();
-    // 软删除：保留一条墓碑记录（含删除时间），其他设备同步时据此删除同一便签
-    await db.notes.put({ ...existing, deletedAt: now, updatedAt: now });
-
-    const proj = projects.find((p) => p.id === existing.projectId);
-    deleteNoteFromExternalVault(existing.title, proj?.name || '默认项目').catch(() => {});
-
-    if (viewingNote?.id === id) {
+    const deleted = await deleteNote(id);
+    if (deleted && viewingNote?.id === id) {
       setIsDetailOpen(false);
       setViewingNote(null);
     }
   };
 
   const handleTogglePin = async (note: Note) => {
-    await db.notes.update(note.id, { pinned: !note.pinned });
+    const updated = await togglePin(note);
     if (viewingNote?.id === note.id) {
-      setViewingNote({ ...note, pinned: !note.pinned });
+      setViewingNote(updated);
     }
   };
 
-  // Duplicate note along with all of its Git revision history
-  const handleDuplicateNote = async (note: Note) => {
-    const now = Date.now();
-    const newId = 'note-' + Math.random().toString(36).substring(2, 9);
-    const duplicatedNote: Note = {
-      ...note,
-      id: newId,
-      title: `${note.title || '无标题便签'} (副本)`,
-      images: note.images ? [...note.images] : [],
-      tags: note.tags ? [...note.tags] : [],
-      createdAt: now,
-      updatedAt: now,
-    };
+  const handleDuplicateNote = (note: Note) => duplicateNote(note);
 
-    await db.notes.add(duplicatedNote);
-
-    // Clone all Git history records from the source note
-    const origHistories = await db.histories.where('noteId').equals(note.id).toArray();
-    if (origHistories.length > 0) {
-      const sorted = [...origHistories].sort((a, b) => a.version - b.version);
-      const copiedHistories: NoteHistory[] = sorted.map((h) => ({
-        ...h,
-        id: 'hist-' + Math.random().toString(36).substring(2, 9),
-        noteId: newId,
-      }));
-      await db.histories.bulkAdd(copiedHistories);
-    } else {
-      await db.histories.add({
-        id: 'hist-' + Math.random().toString(36).substring(2, 9),
-        noteId: newId,
-        version: 1,
-        commitMessage: '复制便签初始版本',
-        title: duplicatedNote.title,
-        content: duplicatedNote.content,
-        timestamp: now,
-        charCount: duplicatedNote.content.length,
-      });
-    }
-  };
-
-  // Restore directly to a previous version (Git hard reset: revert state & remove newer commits without adding a new commit)
   const handleRestoreVersion = async (history: NoteHistory) => {
-    const now = Date.now();
-    const existing = await db.notes.get(history.noteId);
-    if (!existing) return;
-
-    const restoredNote: Note = {
-      ...existing,
-      title: history.title,
-      content: history.content,
-      updatedAt: now,
-    };
-
-    await db.notes.put(restoredNote);
-
-    // Delete any commits newer than the target version (direct rollback, do NOT add an extra commit on top)
-    const allNoteHistories = await db.histories.where('noteId').equals(existing.id).toArray();
-    const newerHistoryIds = allNoteHistories
-      .filter((h) => h.version > history.version)
-      .map((h) => h.id);
-
-    if (newerHistoryIds.length > 0) {
-      await db.histories.bulkDelete(newerHistoryIds);
-    }
-
-    if (viewingNote?.id === existing.id) {
-      setViewingNote(restoredNote);
-    }
-    if (gitDiffNote?.id === existing.id) {
-      setGitDiffNote(restoredNote);
-    }
+    const restored = await restoreVersion(history);
+    if (!restored) return;
+    if (viewingNote?.id === restored.id) setViewingNote(restored);
+    if (gitDiffNote?.id === restored.id) setGitDiffNote(restored);
   };
 
   // Navigate to another note when clicking reference links
   const handleNavigateToNote = (noteId: string) => {
     const target = allNotes.find((n) => n.id === noteId);
     if (target) {
-      setActiveProjectId(target.projectId);
+      selectProject(target.projectId);
       setViewingNote(target);
       setIsDetailOpen(true);
     } else {
@@ -965,8 +490,8 @@ export const App: React.FC = () => {
       {/* Sync Confirmation Modal (Bidirectional explicit security confirmation) */}
       <SyncConfirmationModal
         request={incomingSyncRequest}
-        onAccept={handleAcceptSync}
-        onReject={handleRejectSync}
+        onAccept={acceptSync}
+        onReject={rejectSync}
         localNoteCount={allNotes.length}
         localProjectCount={projects.length}
       />
