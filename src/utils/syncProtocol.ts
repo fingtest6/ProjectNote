@@ -404,8 +404,9 @@ export async function syncWithRemoteServer(
           isReplyToInvite,
         },
         summary: {
-          noteCount: localPayload.notes.length,
-          projectCount: localPayload.projects.length,
+          // 数量只统计未删除项；墓碑仍随 payload 传输，但不计入展示数字
+          noteCount: localPayload.notes.filter((n) => !n.deletedAt).length,
+          projectCount: localPayload.projects.filter((p) => !p.deletedAt).length,
         },
         payload: localPayload,
       }),

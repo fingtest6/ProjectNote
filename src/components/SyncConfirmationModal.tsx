@@ -102,6 +102,19 @@ export const SyncConfirmationModal: React.FC<SyncConfirmationModalProps> = ({
   const ModeIcon = modeInfo.icon;
   const isMobile = request.from.deviceName.includes('手机') || request.from.deviceName.includes('Android') || request.from.deviceName.includes('iPhone');
 
+  // 墓碑仍会随 payload 传输（LWW 需要），但展示给用户的「对方便签」只算未删除项，
+  // 否则会出现「手机本机 1 篇，电脑却显示对方 3 篇」的口径不一致。
+  const payloadNotes = request.payload?.notes;
+  const payloadProjects = request.payload?.projects;
+  const remoteNoteCount =
+    payloadNotes && payloadNotes.length > 0
+      ? payloadNotes.filter((n) => !n.deletedAt).length
+      : request.summary?.noteCount ?? 0;
+  const remoteProjectCount =
+    payloadProjects && payloadProjects.length > 0
+      ? payloadProjects.filter((p) => !p.deletedAt).length
+      : request.summary?.projectCount ?? 0;
+
   return (
     <div className="fixed inset-0 z-70 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-fade-scale">
       <div
@@ -140,8 +153,7 @@ export const SyncConfirmationModal: React.FC<SyncConfirmationModalProps> = ({
                   {request.from.deviceName}
                 </div>
                 <div className="text-[11px] font-mono text-slate-400">
-                  包含：{request.summary?.noteCount ?? (request.payload.notes ? request.payload.notes.length : 0)} 篇便签 ·{' '}
-                  {request.summary?.projectCount ?? (request.payload.projects ? request.payload.projects.length : 0)} 个分类
+                  包含：{remoteNoteCount} 篇便签 · {remoteProjectCount} 个分类
                 </div>
               </div>
             </div>
@@ -166,7 +178,7 @@ export const SyncConfirmationModal: React.FC<SyncConfirmationModalProps> = ({
           {/* Local vs Remote Data Contrast */}
           <div className="flex items-center justify-between px-3 py-2.5 rounded-xl bg-slate-100/70 dark:bg-zinc-800/40 text-xs text-slate-600 dark:text-zinc-300 font-mono">
             <span>💻 本机当前便签：<b>{localNoteCount}</b> 篇 ({localProjectCount} 分类)</span>
-            <span>📱 对方便签：<b>{request.summary?.noteCount ?? request.payload.notes?.length ?? 0}</b> 篇</span>
+            <span>📱 对方便签：<b>{remoteNoteCount}</b> 篇</span>
           </div>
         </div>
 

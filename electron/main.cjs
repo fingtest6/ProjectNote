@@ -250,8 +250,8 @@ function startLanSyncServer() {
               },
               mode: parsed.mode || 'smart-merge',
               summary: parsed.summary || {
-                noteCount: (parsed.payload?.notes || []).length,
-                projectCount: (parsed.payload?.projects || []).length,
+                noteCount: (parsed.payload?.notes || []).filter((n) => !n.deletedAt).length,
+                projectCount: (parsed.payload?.projects || []).filter((p) => !p.deletedAt).length,
               },
               payload: parsed.payload,
             });
