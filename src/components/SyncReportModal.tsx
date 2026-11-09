@@ -65,6 +65,8 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
           : modeInfo.label
       : modeInfo.label;
 
+  const hasDeletion = Boolean(result.details?.some((detail) => detail.startsWith('[删除同步]')));
+
   const renderDetailItem = (detail: string, index: number) => {
     let tagColor = 'bg-slate-100 text-slate-700 dark:bg-zinc-800 dark:text-zinc-300';
     let tagText = '记录';
@@ -171,11 +173,17 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
             </span>
           </div>
 
+          {hasDeletion && (
+            <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">
+              「删除同步」表示这些条目此前已在本机删除，本次只把删除状态同步给对方，不会删除其他便签。
+            </div>
+          )}
+
           {/* Metric Dashboard */}
           {result.success && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/40 border border-slate-200/70 dark:border-zinc-800 text-center space-y-0.5">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">拉取更新</div>
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">拉取变更</div>
                 <div className="text-xl font-bold font-mono text-blue-600 dark:text-blue-400">
                   {result.pulledNotes}
                   <span className="text-xs font-normal text-slate-400 ml-1">篇</span>
@@ -183,7 +191,7 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
               </div>
 
               <div className="p-3 rounded-2xl bg-slate-50 dark:bg-zinc-800/40 border border-slate-200/70 dark:border-zinc-800 text-center space-y-0.5">
-                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">推送更新</div>
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">推送变更</div>
                 <div className="text-xl font-bold font-mono text-amber-600 dark:text-amber-400">
                   {result.pushedNotes}
                   <span className="text-xs font-normal text-slate-400 ml-1">篇</span>

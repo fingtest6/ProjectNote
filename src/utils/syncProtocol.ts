@@ -266,16 +266,23 @@ export async function mergeRemotePayload(
 
     if (remProj.updatedAt > locProj.updatedAt) {
       await db.projects.put(remProj);
-      pulledProjects++;
-      details.push(
-        remProj.deletedAt
-          ? `[删除同步] 项目分类「${remProj.name}」已在对方删除`
-          : `[更新项目] 项目「${remProj.name}」已更新为远端最新设置`
-      );
+      const alreadyDeletedBoth = Boolean(remProj.deletedAt && locProj.deletedAt);
+      if (!alreadyDeletedBoth) {
+        pulledProjects++;
+        details.push(
+          remProj.deletedAt
+            ? `[删除同步] 项目分类「${remProj.name}」已在对方删除`
+            : `[更新项目] 项目「${remProj.name}」已更新为远端最新设置`
+        );
+      }
     } else if (locProj.updatedAt > remProj.updatedAt) {
-      pushedProjects++;
-      if (locProj.deletedAt) {
-        details.push(`[删除同步] 本地已删除的项目「${locProj.name}」将同步到对方`);
+      // 双方都已是墓碑时无需再上报；只有「对方仍存活」时删除才需要传播
+      const alreadyDeletedBoth = Boolean(locProj.deletedAt && remProj.deletedAt);
+      if (!alreadyDeletedBoth) {
+        pushedProjects++;
+        if (locProj.deletedAt) {
+          details.push(`[删除同步] 本机已删除的项目「${locProj.name}」，对方将同步删除`);
+        }
       }
     }
   }
@@ -284,14 +291,11 @@ export async function mergeRemotePayload(
   const remoteProjIds = new Set(remote.projects.map((p) => p.id));
   for (const locProj of localProjects) {
     if (remoteProjIds.has(locProj.id)) continue;
-    if (mode === 'new-only' && locProj.deletedAt) continue;
+    // 对方没有该分类：墓碑没有可同步的对象，不上报，避免每次同步都重复刷
+    if (locProj.deletedAt) continue;
 
     pushedProjects++;
-    details.push(
-      locProj.deletedAt
-        ? `[删除同步] 本地已删除的项目「${locProj.name}」将同步到对方`
-        : `[推送项目] 本地新项目「${locProj.name}」已推送至对方`
-    );
+    details.push(`[推送项目] 本地新项目「${locProj.name}」已推送至对方`);
   }
 
   // --- 2. Merge Notes ---
@@ -313,21 +317,28 @@ export async function mergeRemotePayload(
 
     if (remNote.updatedAt > locNote.updatedAt) {
       await db.notes.put(remNote);
-      pulledNotes++;
-      const proj = await db.projects.get(remNote.projectId);
-      if (remNote.deletedAt) {
-        details.push(`[删除同步] 便签「${remNote.title || '无标题'}」已在对方删除`);
-        deleteNoteFromExternalVault(remNote.title || '无标题', proj?.name || '默认项目').catch(() => {});
-      } else {
-        details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
-        writeNoteToExternalVault(remNote, proj);
+      const alreadyDeletedBoth = Boolean(remNote.deletedAt && locNote.deletedAt);
+      if (!alreadyDeletedBoth) {
+        pulledNotes++;
+        const proj = await db.projects.get(remNote.projectId);
+        if (remNote.deletedAt) {
+          details.push(`[删除同步] 便签「${remNote.title || '无标题'}」已在对方删除`);
+          deleteNoteFromExternalVault(remNote.title || '无标题', proj?.name || '默认项目').catch(() => {});
+        } else {
+          details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
+          writeNoteToExternalVault(remNote, proj);
+        }
       }
     } else if (locNote.updatedAt > remNote.updatedAt) {
-      pushedNotes++;
-      if (locNote.deletedAt) {
-        details.push(`[删除同步] 本地已删除的便签「${locNote.title || '无标题'}」将同步到对方`);
-      } else {
-        details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
+      // 双方都已是墓碑时无需再上报；只有「对方仍存活」时删除才需要传播
+      const alreadyDeletedBoth = Boolean(locNote.deletedAt && remNote.deletedAt);
+      if (!alreadyDeletedBoth) {
+        pushedNotes++;
+        if (locNote.deletedAt) {
+          details.push(`[删除同步] 本机已删除的便签「${locNote.title || '无标题'}」，对方将同步删除`);
+        } else {
+          details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
+        }
       }
     }
   }
@@ -336,14 +347,11 @@ export async function mergeRemotePayload(
   const remoteNoteIds = new Set(remote.notes.map((n) => n.id));
   for (const locNote of localNotes) {
     if (remoteNoteIds.has(locNote.id)) continue;
-    if (mode === 'new-only' && locNote.deletedAt) continue;
+    // 对方没有这条便签：墓碑没有可同步的对象，不上报
+    if (locNote.deletedAt) continue;
 
     pushedNotes++;
-    details.push(
-      locNote.deletedAt
-        ? `[删除同步] 本地已删除的便签「${locNote.title || '无标题'}」将同步到对方`
-        : `[推送新增] 本地新建便签「${locNote.title || '无标题'}」已推送到对方`
-    );
+    details.push(`[推送新增] 本地新建便签「${locNote.title || '无标题'}」已推送到对方`);
   }
 
   // --- 3. Merge Git Histories ---

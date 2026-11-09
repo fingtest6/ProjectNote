@@ -1252,13 +1252,13 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
                       {/* Metric Grid */}
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         <div className="p-2 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/60 dark:border-zinc-700/60 text-center">
-                          <div className="text-[10px] text-slate-400 dark:text-zinc-500">从电脑拉取</div>
+                          <div className="text-[10px] text-slate-400 dark:text-zinc-500">拉取变更</div>
                           <div className="text-sm font-bold font-mono text-blue-600 dark:text-blue-400">
                             {detailedResult.pulledNotes} <span className="text-[10px] font-normal">篇</span>
                           </div>
                         </div>
                         <div className="p-2 rounded-xl bg-slate-50 dark:bg-zinc-800/60 border border-slate-200/60 dark:border-zinc-700/60 text-center">
-                          <div className="text-[10px] text-slate-400 dark:text-zinc-500">向电脑推送</div>
+                          <div className="text-[10px] text-slate-400 dark:text-zinc-500">推送变更</div>
                           <div className="text-sm font-bold font-mono text-amber-600 dark:text-amber-400">
                             {detailedResult.pushedNotes} <span className="text-[10px] font-normal">篇</span>
                           </div>
@@ -1276,6 +1276,12 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
                           </div>
                         </div>
                       </div>
+
+                      {detailedResult.details?.some((d) => d.startsWith('[删除同步]')) && (
+                        <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-700 dark:text-amber-300 leading-relaxed">
+                          「删除同步」是此前已在本机删除的条目，本次仅同步删除状态，不会删除其他便签。
+                        </div>
+                      )}
 
                       {/* Expandable Change List */}
                       {detailedResult.details && detailedResult.details.length > 0 && (
