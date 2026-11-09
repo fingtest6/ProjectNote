@@ -66,13 +66,18 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
       : modeInfo.label;
 
   const hasDeletion = Boolean(result.details?.some((detail) => detail.startsWith('[删除同步]')));
+  const hasRestore = Boolean(result.details?.some((detail) => detail.startsWith('[恢复删除]')));
 
   const renderDetailItem = (detail: string, index: number) => {
     let tagColor = 'bg-slate-100 text-slate-700 dark:bg-zinc-800 dark:text-zinc-300';
     let tagText = '记录';
     let content = detail;
 
-    if (detail.startsWith('[删除同步]')) {
+    if (detail.startsWith('[恢复删除]')) {
+      tagColor = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20';
+      tagText = '恢复删除';
+      content = detail.replace('[恢复删除]', '').trim();
+    } else if (detail.startsWith('[删除同步]')) {
       tagColor = 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20';
       tagText = '删除同步';
       content = detail.replace('[删除同步]', '').trim();
@@ -172,6 +177,12 @@ export const SyncReportModal: React.FC<SyncReportModalProps> = ({ isOpen, onClos
               <span>{modeLabel}</span>
             </span>
           </div>
+
+          {hasRestore && (
+            <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-700 dark:text-emerald-300 leading-relaxed">
+              「恢复删除」表示该条目在本机被删除过，但对方仍保留着；智能合并按非破坏性规则恢复了它。要彻底删除请使用「完全覆盖」。
+            </div>
+          )}
 
           {hasDeletion && (
             <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 leading-relaxed">

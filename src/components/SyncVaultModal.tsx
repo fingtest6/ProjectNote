@@ -563,7 +563,11 @@ export const SyncVaultModal: React.FC<SyncVaultModalProps> = ({
     let tagText = '记录';
     let content = detail;
 
-    if (detail.startsWith('[删除同步]')) {
+    if (detail.startsWith('[恢复删除]')) {
+      tagColor = 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20';
+      tagText = '恢复删除';
+      content = detail.replace('[恢复删除]', '').trim();
+    } else if (detail.startsWith('[删除同步]')) {
       tagColor = 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20';
       tagText = '删除同步';
       content = detail.replace('[删除同步]', '').trim();

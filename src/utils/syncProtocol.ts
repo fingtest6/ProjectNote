@@ -251,39 +251,34 @@ export async function mergeRemotePayload(
   }
 
   // --- 1. Merge Projects ---
-  // 墓碑（删除状态）是一种带时间戳的变更，必须参与 LWW 比较：
-  // 忽略它会导致「A 删了、B 还活着」永久不一致，且墓碑日后回收时 B 的旧副本会复活。
+  // 智能合并不删除任何东西：墓碑视为「本机没有这个分类」。
+  // 对方仍存活则恢复；对方也没有则保持删除。删除只在覆盖模式传播。
   for (const remProj of remote.projects) {
+    if (remProj.deletedAt) continue;
+
     const locProj = localProjectMap.get(remProj.id);
     if (!locProj) {
-      if (!remProj.deletedAt) {
-        await db.projects.put(remProj);
-        pulledProjects++;
-        details.push(`[拉取项目] 新增项目分类「${remProj.name}」`);
-      }
+      await db.projects.put(remProj);
+      pulledProjects++;
+      details.push(`[拉取项目] 新增项目分类「${remProj.name}」`);
       continue;
     }
 
     if (mode === 'new-only') continue;
 
+    if (locProj.deletedAt) {
+      await db.projects.put(remProj);
+      pulledProjects++;
+      details.push(`[恢复删除] 项目分类「${remProj.name}」已按对方仍保留的副本恢复`);
+      continue;
+    }
+
     if (remProj.updatedAt > locProj.updatedAt) {
       await db.projects.put(remProj);
-      // 双方都已删除时无需重复上报，只同步时间戳
-      if (!(remProj.deletedAt && locProj.deletedAt)) {
-        pulledProjects++;
-        details.push(
-          remProj.deletedAt
-            ? `[删除同步] 项目分类「${remProj.name}」已在对方删除`
-            : `[更新项目] 项目「${remProj.name}」已更新为远端最新设置`
-        );
-      }
+      pulledProjects++;
+      details.push(`[更新项目] 项目「${remProj.name}」已更新为远端最新设置`);
     } else if (locProj.updatedAt > remProj.updatedAt) {
-      if (!(locProj.deletedAt && remProj.deletedAt)) {
-        pushedProjects++;
-        if (locProj.deletedAt) {
-          details.push(`[删除同步] 本机已删除的项目「${locProj.name}」，对方将同步删除`);
-        }
-      }
+      pushedProjects++;
     }
   }
 
@@ -299,45 +294,41 @@ export async function mergeRemotePayload(
   }
 
   // --- 2. Merge Notes ---
-  // 墓碑按 updatedAt 参与 LWW；双方都已删除时不上报，避免报告噪音。
+  // 非破坏性：墓碑不参与合并；对方仍存活则恢复，双方都删除则保持删除。
   for (const remNote of remote.notes) {
+    if (remNote.deletedAt) continue;
+
     const locNote = localNoteMap.get(remNote.id);
     if (!locNote) {
-      if (!remNote.deletedAt) {
-        await db.notes.put(remNote);
-        pulledNotes++;
-        newNotesAdded++;
-        details.push(`[拉取新增] 便签「${remNote.title || '无标题'}」`);
-        const proj = await db.projects.get(remNote.projectId);
-        writeNoteToExternalVault(remNote, proj);
-      }
+      await db.notes.put(remNote);
+      pulledNotes++;
+      newNotesAdded++;
+      details.push(`[拉取新增] 便签「${remNote.title || '无标题'}」`);
+      const proj = await db.projects.get(remNote.projectId);
+      writeNoteToExternalVault(remNote, proj);
       continue;
     }
 
     if (mode === 'new-only') continue;
 
+    if (locNote.deletedAt) {
+      await db.notes.put(remNote);
+      pulledNotes++;
+      details.push(`[恢复删除] 便签「${remNote.title || '无标题'}」已按对方仍保留的副本恢复`);
+      const proj = await db.projects.get(remNote.projectId);
+      writeNoteToExternalVault(remNote, proj);
+      continue;
+    }
+
     if (remNote.updatedAt > locNote.updatedAt) {
       await db.notes.put(remNote);
-      if (!(remNote.deletedAt && locNote.deletedAt)) {
-        pulledNotes++;
-        const proj = await db.projects.get(remNote.projectId);
-        if (remNote.deletedAt) {
-          details.push(`[删除同步] 便签「${remNote.title || '无标题'}」已在对方删除`);
-          deleteNoteFromExternalVault(remNote.title || '无标题', proj?.name || '默认项目').catch(() => {});
-        } else {
-          details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
-          writeNoteToExternalVault(remNote, proj);
-        }
-      }
+      pulledNotes++;
+      details.push(`[拉取更新] 便签「${remNote.title}」(对方版本更新)`);
+      const proj = await db.projects.get(remNote.projectId);
+      writeNoteToExternalVault(remNote, proj);
     } else if (locNote.updatedAt > remNote.updatedAt) {
-      if (!(locNote.deletedAt && remNote.deletedAt)) {
-        pushedNotes++;
-        if (locNote.deletedAt) {
-          details.push(`[删除同步] 本机已删除的便签「${locNote.title || '无标题'}」，对方将同步删除`);
-        } else {
-          details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
-        }
-      }
+      pushedNotes++;
+      details.push(`[推送更新] 便签「${locNote.title}」(本机版本更新)`);
     }
   }
 
