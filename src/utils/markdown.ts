@@ -31,15 +31,29 @@ export function extractReferences(content: string): NoteReference[] {
   return references;
 }
 
+export const NOTE_REF_BADGE_CLASS =
+  'note-ref-badge inline-flex items-center gap-1 px-2 py-0.5 my-0.5 rounded-full text-xs font-medium cursor-pointer transition-colors shadow-sm select-none';
+
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Transforms [[noteId|title]] syntax into custom HTML span buttons
  * that can be intercepted by click handlers
  */
 export function preProcessWikiLinks(markdown: string): string {
   // Replace [[noteId|title]] with <span class="note-ref-badge" data-note-id="noteId">🔗 title</span>
+  // 便签标题来自用户输入，必须转义后再拼进 HTML，防止标题注入标签
   return markdown.replace(
     /\[\[([a-zA-Z0-9_-]+)\|([^\]]+)\]\]/g,
-    `<span class="note-ref-badge inline-flex items-center gap-1 px-2 py-0.5 my-0.5 rounded-full text-xs font-medium cursor-pointer transition-colors shadow-sm select-none" data-note-id="$1">🔗 $2</span>`
+    (_match, noteId: string, title: string) =>
+      `<span class="${NOTE_REF_BADGE_CLASS}" data-note-id="${noteId}">🔗 ${escapeHtml(title)}</span>`
   );
 }
 

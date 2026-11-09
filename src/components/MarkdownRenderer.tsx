@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { marked } from 'marked';
-import { preProcessWikiLinks } from '../utils/markdown';
+import { preProcessWikiLinks, escapeHtml } from '../utils/markdown';
+import { sanitizeHtml } from '../utils/sanitizeHtml';
 
 interface MarkdownRendererProps {
   content: string;
@@ -18,9 +19,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   const htmlContent = React.useMemo(() => {
     try {
       const processed = preProcessWikiLinks(content);
-      return marked.parse(processed) as string;
+      const parsed = marked.parse(processed) as string;
+      // marked 会原样保留正文中的原始 HTML（script / onerror / svg 等），
+      // 因此注入前必须按白名单净化
+      return sanitizeHtml(parsed);
     } catch {
-      return content;
+      // 解析失败时按纯文本转义展示，绝不直接注入原文
+      return sanitizeHtml(escapeHtml(content).replace(/\n/g, '<br>'));
     }
   }, [content]);
 
