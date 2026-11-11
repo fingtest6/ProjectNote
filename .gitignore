@@ -32,6 +32,10 @@ android/capacitor-cordova-android-plugins/
 /项目便签.exe
 /app
 
+# ---------- Qt ----------
+qt/build/
+qt/resources/icns-src/
+
 # ---------- OS / editor ----------
 .DS_Store
 Thumbs.db

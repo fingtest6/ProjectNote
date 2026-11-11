@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=项目便签
+GenericName=便签
+Comment=分项目记录、双链引用与 Git 式历史的本地便签
+Exec=projectnote
+Icon=projectnote
+Terminal=false
+Categories=Office;Utility;
+StartupWMClass=projectnote
+Keywords=notes;markdown;project;
